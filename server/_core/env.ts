@@ -1,5 +1,9 @@
 export const ENV = {
-  appId: process.env.VITE_APP_ID ?? process.env.KEYCLOAK_CLIENT_ID ?? "",
+  appId:
+    process.env.APP_ID ??
+    process.env.VITE_APP_ID ??
+    process.env.KEYCLOAK_CLIENT_ID ??
+    "sydney-flight-deals-scanner",
   cookieSecret: process.env.JWT_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
   keycloakBaseUrl: process.env.KEYCLOAK_BASE_URL ?? "",

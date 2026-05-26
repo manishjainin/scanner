@@ -10,6 +10,7 @@ import {
   createDestination,
   updateDestination,
   deleteDestination,
+  getUserByOpenId,
   getSetting,
   setSetting,
   upsertUser,
@@ -83,7 +84,22 @@ export const appRouter = router({
           maxAge: ONE_YEAR_MS,
         });
 
-        return { success: true };
+        const user = await getUserByOpenId(openId);
+
+        return {
+          success: true,
+          user: user ?? {
+            id: 0,
+            openId,
+            name,
+            email,
+            loginMethod: "local",
+            role: "admin" as const,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastSignedIn: new Date(),
+          },
+        };
       }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);

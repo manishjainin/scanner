@@ -15,7 +15,8 @@ export function LocalLoginForm({ compact = false }: LocalLoginFormProps) {
   const [password, setPassword] = useState("");
 
   const login = trpc.auth.login.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (data) => {
+      utils.auth.me.setData(undefined, data.user);
       await utils.auth.me.invalidate();
       toast.success("Signed in");
     },
