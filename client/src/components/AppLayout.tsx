@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
-import { Plane, LayoutDashboard, Settings, LogIn, LogOut, User } from "lucide-react";
+import { Plane, LayoutDashboard, Settings, LogOut, User } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
+import { LocalLoginForm } from "@/components/LocalLoginForm";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -74,10 +74,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               </button>
             </div>
           ) : (
-            <a href={getLoginUrl()} className="sidebar-nav-item block">
-              <LogIn className="w-4 h-4 flex-shrink-0" />
-              Sign in
-            </a>
+            <LocalLoginForm compact />
           )}
         </div>
       </aside>

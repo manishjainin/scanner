@@ -1,4 +1,4 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
@@ -12,6 +12,7 @@ import {
   deleteDestination,
   getSetting,
   setSetting,
+  upsertUser,
 } from "./db";
 import {
   runScan,
@@ -21,6 +22,7 @@ import {
   getRecentScanRuns,
 } from "./scanner";
 import { checkAmadeusConnection } from "./amadeus";
+import { sdk } from "./_core/sdk";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") {
@@ -34,6 +36,55 @@ export const appRouter = router({
 
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+    login: publicProcedure
+      .input(z.object({
+        email: z.string().email(),
+        password: z.string().min(1),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const configuredEmail = process.env.LOCAL_LOGIN_EMAIL?.trim().toLowerCase();
+        const configuredPassword = process.env.LOCAL_LOGIN_PASSWORD ?? "";
+        const email = input.email.trim().toLowerCase();
+
+        if (!configuredEmail || !configuredPassword) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Local login is not configured",
+          });
+        }
+
+        if (email !== configuredEmail || input.password !== configuredPassword) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password",
+          });
+        }
+
+        const openId = `local:${email}`;
+        const name = email.split("@")[0] || "Local Admin";
+
+        await upsertUser({
+          openId,
+          name,
+          email,
+          loginMethod: "local",
+          role: "admin",
+          lastSignedIn: new Date(),
+        });
+
+        const sessionToken = await sdk.createSessionToken(openId, {
+          name,
+          email,
+          loginMethod: "local",
+        });
+
+        ctx.res.cookie(COOKIE_NAME, sessionToken, {
+          ...getSessionCookieOptions(ctx.req),
+          maxAge: ONE_YEAR_MS,
+        });
+
+        return { success: true };
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });

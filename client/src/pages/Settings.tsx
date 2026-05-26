@@ -8,7 +8,7 @@ import {
   CheckCircle2, XCircle, Loader2, Plus, Pencil, Trash2,
   Settings as SettingsIcon, Wifi, WifiOff, Save, X,
 } from "lucide-react";
-import { getLoginUrl } from "@/const";
+import { LocalLoginForm } from "@/components/LocalLoginForm";
 
 interface DestinationFormData {
   name: string;
@@ -69,11 +69,9 @@ export default function Settings() {
       <div className="p-6 lg:p-8 flex flex-col items-center justify-center py-24 text-center">
         <h2 className="text-xl font-semibold text-foreground mb-2">Sign in required</h2>
         <p className="text-muted-foreground text-sm mb-6">You need to be signed in as admin to access settings.</p>
-        <a href={getLoginUrl()}>
-          <Button style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)", fontWeight: 600 }}>
-            Sign in
-          </Button>
-        </a>
+        <div className="w-full max-w-sm">
+          <LocalLoginForm />
+        </div>
       </div>
     );
   }
