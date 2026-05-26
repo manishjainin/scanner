@@ -41,6 +41,12 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
   return { ctx, clearedCookies };
 }
 
+function createHttpAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] } {
+  const context = createAuthContext();
+  context.ctx.req.protocol = "http";
+  return context;
+}
+
 describe("auth.logout", () => {
   it("clears the session cookie and reports success", async () => {
     const { ctx, clearedCookies } = createAuthContext();
@@ -55,6 +61,21 @@ describe("auth.logout", () => {
       maxAge: -1,
       secure: true,
       sameSite: "none",
+      httpOnly: true,
+      path: "/",
+    });
+  });
+
+  it("uses a local-http compatible cookie policy", async () => {
+    const { ctx, clearedCookies } = createHttpAuthContext();
+    const caller = appRouter.createCaller(ctx);
+
+    await caller.auth.logout();
+
+    expect(clearedCookies[0]?.options).toMatchObject({
+      maxAge: -1,
+      secure: false,
+      sameSite: "lax",
       httpOnly: true,
       path: "/",
     });

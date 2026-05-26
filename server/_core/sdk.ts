@@ -222,6 +222,31 @@ class SDKServer {
 
     const sessionUserId = session.openId;
     const signedInAt = new Date();
+    const database = await db.getDb();
+
+    if (!database) {
+      const localEmail = process.env.LOCAL_LOGIN_EMAIL?.trim().toLowerCase();
+      const sessionEmail = session.email?.trim().toLowerCase();
+
+      if (
+        session.loginMethod === "local" &&
+        localEmail &&
+        sessionEmail === localEmail
+      ) {
+        return {
+          id: 0,
+          openId: session.openId,
+          name: session.name || "Local Admin",
+          email: session.email ?? null,
+          loginMethod: "local",
+          role: "admin",
+          createdAt: signedInAt,
+          updatedAt: signedInAt,
+          lastSignedIn: signedInAt,
+        };
+      }
+    }
+
     let user = await db.getUserByOpenId(sessionUserId);
 
     if (!user) {
