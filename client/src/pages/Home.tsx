@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   RefreshCw, Flame, TrendingDown, Minus, Clock,
-  CheckCircle2, AlertCircle, Loader2, Globe,
+  CheckCircle2, AlertCircle, Loader2, Globe, PlaneTakeoff,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow, isToday } from "date-fns";
 
 const CONTINENTS = ["All", "Asia", "Pacific", "Middle East", "Europe", "Americas", "Africa"] as const;
 type ContinentFilter = (typeof CONTINENTS)[number];
@@ -21,6 +21,11 @@ const DEAL_FILTERS = [
   { label: "Standard", value: "Standard", icon: Minus },
 ] as const;
 type DealFilter = (typeof DEAL_FILTERS)[number]["value"];
+
+const ORIGIN_CITIES: Record<string, string> = {
+  SYD: "Sydney", MEL: "Melbourne", BNE: "Brisbane",
+  PER: "Perth", ADL: "Adelaide", CBR: "Canberra",
+};
 
 type DealRow = {
   scan: {
@@ -60,11 +65,16 @@ export default function Home() {
   const isAdmin = user?.role === "admin";
   const [dealFilter, setDealFilter] = useState<DealFilter>("all");
   const [continentFilter, setContinentFilter] = useState<ContinentFilter>("All");
+  const [originFilter, setOriginFilter] = useState<string>("All");
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null);
 
-  const { data: deals, isLoading, refetch } = trpc.scans.todayDeals.useQuery(undefined, {
-    refetchInterval: 60_000,
-  });
+  const { data: availableOrigins } = trpc.scans.availableOrigins.useQuery();
+  const showOriginFilter = (availableOrigins?.length ?? 1) > 1;
+
+  const { data: deals, isLoading, isError, error, refetch } = trpc.scans.todayDeals.useQuery(
+    { origin: originFilter !== "All" ? originFilter : undefined },
+    { refetchInterval: 60_000 }
+  );
 
   const triggerScan = trpc.scans.triggerScan.useMutation({
     onSuccess: (data) => {
@@ -89,12 +99,14 @@ export default function Home() {
       {/* Header */}
       <div className="flex items-start justify-between mb-8 gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold text-foreground mb-1">Today's Flight Deals</h1>
-          <p className="text-muted-foreground text-sm">Round-trip fares from Sydney · AI-rated daily</p>
+          <h1 className="text-3xl font-bold text-foreground mb-1">Flight Deals</h1>
+          <p className="text-muted-foreground text-sm">Round-trip fares · AI-rated · Updated daily</p>
           {lastScan && (
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5">
               <Clock className="w-3 h-3" />
-              Last scanned {format(new Date(lastScan), "d MMM yyyy 'at' h:mm a")}
+              {isToday(new Date(lastScan))
+                ? `Last scanned today at ${format(new Date(lastScan), "h:mm a")}`
+                : `Last scanned ${formatDistanceToNow(new Date(lastScan), { addSuffix: true })}`}
             </p>
           )}
         </div>
@@ -117,6 +129,29 @@ export default function Home() {
           <StatCard label="Destinations scanned" value={deals.length.toString()} icon={<CheckCircle2 className="w-4 h-4 text-emerald-400" />} />
           <StatCard label="Hot Deals today" value={hotCount.toString()} icon={<Flame className="w-4 h-4 text-orange-400" />} highlight={hotCount > 0} />
           <StatCard label="Good Prices today" value={goodCount.toString()} icon={<TrendingDown className="w-4 h-4 text-emerald-400" />} />
+        </div>
+      )}
+
+      {/* Origin filter (only shown when multiple origins are configured) */}
+      {showOriginFilter && availableOrigins && (
+        <div className="mb-3">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <PlaneTakeoff className="w-3.5 h-3.5 text-muted-foreground mr-1" />
+            {["All", ...availableOrigins].map((o) => (
+              <button
+                key={o}
+                onClick={() => setOriginFilter(o)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-all duration-150 ${
+                  originFilter === o
+                    ? "text-black"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+                style={originFilter === o ? { background: "linear-gradient(135deg, oklch(0.65 0.20 35), oklch(0.72 0.18 50))" } : {}}
+              >
+                {o === "All" ? "All Origins" : `${ORIGIN_CITIES[o] ?? o} (${o})`}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -162,6 +197,27 @@ export default function Home() {
         })}
       </div>
 
+      {/* Error state */}
+      {isError && !isLoading && (
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-red-500/10 flex items-center justify-center mb-4">
+            <AlertCircle className="w-8 h-8 text-red-400" />
+          </div>
+          <h3 className="text-lg font-semibold text-foreground mb-2">Failed to load deals</h3>
+          <p className="text-sm text-muted-foreground max-w-sm mb-6">
+            {error?.message ?? "Something went wrong fetching today's deals."}
+          </p>
+          <Button
+            onClick={() => refetch()}
+            variant="outline"
+            className="flex items-center gap-2 text-sm"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Try Again
+          </Button>
+        </div>
+      )}
+
       {/* Loading */}
       {isLoading && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -172,14 +228,14 @@ export default function Home() {
       )}
 
       {/* Empty state */}
-      {!isLoading && (!deals || deals.length === 0) && (
+      {!isLoading && !isError && (!deals || deals.length === 0) && (
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center mb-4">
             <AlertCircle className="w-8 h-8 text-muted-foreground" />
           </div>
           <h3 className="text-lg font-semibold text-foreground mb-2">No deals scanned yet</h3>
           <p className="text-sm text-muted-foreground max-w-sm mb-6">
-            The daily scanner runs every morning. Trigger an on-demand scan to see today's deals.
+            No scans have run yet. Trigger a scan to see the latest fares from your configured origins.
           </p>
           {isAdmin && (
             <Button
@@ -195,7 +251,7 @@ export default function Home() {
       )}
 
       {/* Deal cards */}
-      {!isLoading && filteredDeals && filteredDeals.length > 0 && (
+      {!isLoading && !isError && filteredDeals && filteredDeals.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filteredDeals.map((row, i) => (
             <DealCard
@@ -225,7 +281,7 @@ export default function Home() {
         </div>
       )}
 
-      {!isLoading && filteredDeals?.length === 0 && deals && deals.length > 0 && (
+      {!isLoading && !isError && filteredDeals?.length === 0 && deals && deals.length > 0 && (
         <div className="text-center py-16 text-muted-foreground text-sm">
           No deals found for the selected filters. Try adjusting the continent or deal rating filter.
         </div>

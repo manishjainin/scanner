@@ -1,18 +1,20 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
-  CheckCircle2, XCircle, Loader2, Plus, Pencil, Trash2,
-  Settings as SettingsIcon, Wifi, WifiOff, Save, X,
+  XCircle, Loader2, Plus, Pencil, Trash2,
+  Settings as SettingsIcon, Wifi, WifiOff, Save, X, Bell, PlaneTakeoff,
 } from "lucide-react";
 import { LocalLoginForm } from "@/components/LocalLoginForm";
 
 interface DestinationFormData {
   name: string;
   iataCode: string;
+  country: string;
+  continent: string;
   region: string;
   bookingWindowDays: number;
   defaultTripDays: number;
@@ -22,13 +24,16 @@ interface DestinationFormData {
 const EMPTY_FORM: DestinationFormData = {
   name: "",
   iataCode: "",
+  country: "",
+  continent: "",
   region: "",
   bookingWindowDays: 120,
   defaultTripDays: 10,
   isActive: true,
 };
 
-const REGIONS = ["SE Asia", "NE Asia", "Europe", "N America", "Pacific", "Middle East", "Mexico", "Other"];
+const REGIONS = ["SE Asia", "NE Asia", "Europe", "N America", "Pacific", "Middle East", "Mexico", "South Asia", "Africa", "Other"];
+const CONTINENTS = ["Asia", "Pacific", "Middle East", "Europe", "Americas", "Africa"];
 
 export default function Settings() {
   const { user, isAuthenticated } = useAuth();
@@ -38,11 +43,33 @@ export default function Settings() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [formData, setFormData] = useState<DestinationFormData>(EMPTY_FORM);
 
+  // Notification prefs local state
+  const [notifThreshold, setNotifThreshold] = useState(-15);
+  const [notifEnabled, setNotifEnabled] = useState(true);
+  const [originsValue, setOriginsValue] = useState("SYD");
+
   const { data: destinations, refetch: refetchDestinations } = trpc.destinations.list.useQuery();
   const { data: connections, isLoading: connLoading, refetch: refetchConnections } = trpc.settings.checkConnections.useQuery(
     undefined,
     { enabled: isAdmin, refetchOnWindowFocus: false }
   );
+  const { data: notifPrefs, refetch: refetchNotifPrefs } = trpc.settings.notificationPrefs.useQuery(
+    undefined,
+    { enabled: isAdmin }
+  );
+
+  useEffect(() => {
+    if (notifPrefs) {
+      setNotifThreshold(notifPrefs.hotDealThreshold);
+      setNotifEnabled(notifPrefs.enabled);
+      setOriginsValue(notifPrefs.origins);
+    }
+  }, [notifPrefs]);
+
+  const saveNotifPrefs = trpc.settings.saveNotificationPrefs.useMutation({
+    onSuccess: () => { toast.success("Settings saved"); refetchNotifPrefs(); },
+    onError: (e) => toast.error(e.message),
+  });
 
   const createDest = trpc.destinations.create.useMutation({
     onSuccess: () => { toast.success("Destination added"); setShowAddForm(false); setFormData(EMPTY_FORM); refetchDestinations(); },
@@ -90,6 +117,8 @@ export default function Settings() {
     setFormData({
       name: dest.name,
       iataCode: dest.iataCode,
+      country: dest.country ?? "",
+      continent: dest.continent ?? "",
       region: dest.region,
       bookingWindowDays: dest.bookingWindowDays,
       defaultTripDays: dest.defaultTripDays,
@@ -115,6 +144,84 @@ export default function Settings() {
           <p className="text-muted-foreground text-sm">Manage destinations, booking windows, and API connections</p>
         </div>
       </div>
+
+      {/* Scan Origins & Notification Preferences */}
+      <section className="mb-8">
+        <div className="flex items-center gap-2 mb-4">
+          <Bell className="w-4 h-4 text-muted-foreground" />
+          <h2 className="text-base font-semibold text-foreground">Scan & Notification Settings</h2>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-5 space-y-5">
+          {/* Scan origins */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <PlaneTakeoff className="w-3.5 h-3.5 text-muted-foreground" />
+              <label className="text-sm font-medium text-foreground">Scan Origins</label>
+            </div>
+            <p className="text-xs text-muted-foreground mb-2">
+              Comma-separated IATA codes to scan from (e.g. <span className="font-mono">SYD,MEL,BNE</span>)
+            </p>
+            <Input
+              value={originsValue}
+              onChange={(e) => setOriginsValue(e.target.value.toUpperCase())}
+              placeholder="SYD"
+              className="bg-secondary border-border text-foreground text-sm max-w-xs font-mono"
+            />
+          </div>
+
+          {/* Notification threshold */}
+          <div>
+            <label className="text-sm font-medium text-foreground block mb-1">
+              Hot Deal Alert Threshold
+            </label>
+            <p className="text-xs text-muted-foreground mb-3">
+              Send push notification when price is this far below the 30-day average. Current: <span className="text-foreground font-semibold">{notifThreshold}%</span>
+            </p>
+            <div className="flex items-center gap-4 max-w-sm">
+              <span className="text-xs text-muted-foreground w-10">−50%</span>
+              <input
+                type="range"
+                min={-50}
+                max={-1}
+                step={1}
+                value={notifThreshold}
+                onChange={(e) => setNotifThreshold(parseInt(e.target.value))}
+                className="flex-1 accent-amber-400"
+              />
+              <span className="text-xs text-muted-foreground w-8">−1%</span>
+            </div>
+          </div>
+
+          {/* Notifications enabled toggle */}
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              id="notifEnabled"
+              checked={notifEnabled}
+              onChange={(e) => setNotifEnabled(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="notifEnabled" className="text-sm text-foreground">
+              Enable push notifications for hot deals
+            </label>
+          </div>
+
+          <Button
+            onClick={() => saveNotifPrefs.mutate({
+              hotDealThreshold: notifThreshold,
+              enabled: notifEnabled,
+              origins: originsValue || "SYD",
+            })}
+            disabled={saveNotifPrefs.isPending}
+            size="sm"
+            className="flex items-center gap-1.5 text-xs font-semibold"
+            style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
+          >
+            {saveNotifPrefs.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Save Settings
+          </Button>
+        </div>
+      </section>
 
       {/* API Connection Status */}
       <section className="mb-8">
@@ -193,6 +300,24 @@ export default function Settings() {
                   maxLength={3}
                   className="bg-secondary border-border text-foreground text-sm uppercase"
                 />
+              </FormField>
+              <FormField label="Country">
+                <Input
+                  value={formData.country}
+                  onChange={(e) => setFormData((p) => ({ ...p, country: e.target.value }))}
+                  placeholder="e.g. Indonesia"
+                  className="bg-secondary border-border text-foreground text-sm"
+                />
+              </FormField>
+              <FormField label="Continent">
+                <select
+                  value={formData.continent}
+                  onChange={(e) => setFormData((p) => ({ ...p, continent: e.target.value }))}
+                  className="w-full h-9 rounded-md border border-border bg-secondary text-foreground text-sm px-3"
+                >
+                  <option value="">Select continent</option>
+                  {CONTINENTS.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
               </FormField>
               <FormField label="Region">
                 <select

@@ -6,16 +6,31 @@
  * - Triggers owner push notification when fare is >15% below 30-day average
  */
 
-import { and, avg, desc, eq, gte, sql } from "drizzle-orm";
-import { getDb } from "./db";
+import { and, avg, desc, eq, gte, asc } from "drizzle-orm";
+import { getDb, getSetting } from "./db";
 import { destinations, flightScans, scanRuns } from "../drizzle/schema";
 import { searchFlights } from "./amadeus";
-// Direct OpenAI call using OPENAI_API_KEY so GPT-5-mini is used as specified
 import { notifyOwner } from "./_core/notification";
 
-const ORIGIN = "SYD";
-const HOT_DEAL_THRESHOLD = -15; // % below average
+const DEFAULT_ORIGIN = "SYD";
+const HOT_DEAL_THRESHOLD = -15; // % below average (default, overridden by appSettings)
 const GOOD_PRICE_THRESHOLD = -5; // % below average
+
+async function getConfiguredOrigins(): Promise<string[]> {
+  const val = await getSetting("scan.origins");
+  if (!val) return [DEFAULT_ORIGIN];
+  return val.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+}
+
+async function getHotDealThreshold(): Promise<number> {
+  const val = await getSetting("notification.hotDealThreshold");
+  return val ? parseFloat(val) : HOT_DEAL_THRESHOLD;
+}
+
+async function areNotificationsEnabled(): Promise<boolean> {
+  const val = await getSetting("notification.enabled");
+  return val !== "false";
+}
 
 // ─── Seed default destinations ────────────────────────────────────────────────
 const DEFAULT_DESTINATIONS = [
@@ -79,7 +94,7 @@ function todayStr(): string {
 }
 
 // ─── 30-day average price for a destination ───────────────────────────────────
-async function getThirtyDayAvg(destinationId: number): Promise<number | null> {
+async function getThirtyDayAvg(destinationId: number, origin = DEFAULT_ORIGIN): Promise<number | null> {
   const db = await getDb();
   if (!db) return null;
 
@@ -92,6 +107,7 @@ async function getThirtyDayAvg(destinationId: number): Promise<number | null> {
     .where(
       and(
         eq(flightScans.destinationId, destinationId),
+        eq(flightScans.origin, origin),
         gte(flightScans.scannedAt, thirtyDaysAgo)
       )
     );
@@ -102,6 +118,7 @@ async function getThirtyDayAvg(destinationId: number): Promise<number | null> {
 
 // ─── AI deal rating + summary ─────────────────────────────────────────────────
 async function rateWithAI(params: {
+  origin: string;
   destination: string;
   price: number;
   currency: string;
@@ -115,14 +132,14 @@ async function rateWithAI(params: {
   percentVsAvg: number | null;
 }): Promise<{ dealRating: "Hot Deal" | "Good Price" | "Standard"; aiSummary: string; aiTravelTip: string }> {
   const avgText = params.thirtyDayAvg
-    ? `The 30-day average price for this route is $${params.thirtyDayAvg.toFixed(0)} AUD (${params.percentVsAvg !== null ? (params.percentVsAvg > 0 ? "+" : "") + params.percentVsAvg.toFixed(1) + "% vs average" : "no comparison available"}).`
+    ? `The 30-day average price for this route is $${params.thirtyDayAvg.toFixed(0)} ${params.currency} (${params.percentVsAvg !== null ? (params.percentVsAvg > 0 ? "+" : "") + params.percentVsAvg.toFixed(1) + "% vs average" : "no comparison available"}).`
     : "No historical price data is available yet for comparison.";
 
   const prompt = `You are a flight deal analyst for Australian travellers. Evaluate this flight deal and respond in JSON.
 
 Flight details:
-- Route: Sydney (SYD) → ${params.destination} (round trip)
-- Price: $${params.price.toFixed(0)} AUD
+- Route: ${params.origin} → ${params.destination} (round trip)
+- Price: $${params.price.toFixed(0)} ${params.currency}
 - Airline: ${params.airline}
 - Stops: ${params.stops === 0 ? "Direct" : params.stops + " stop(s)"}
 - Departure: ${params.departureDate}, Return: ${params.returnDate}
@@ -196,7 +213,7 @@ Respond with JSON only:
     }
     return {
       dealRating,
-      aiSummary: `Round trip from Sydney to ${params.destination} for $${params.price.toFixed(0)} AUD.`,
+      aiSummary: `Round trip from ${params.origin} to ${params.destination} for $${params.price.toFixed(0)} ${params.currency}.`,
       aiTravelTip: `Book in advance for the best fares to ${params.destination}.`,
     };
   }
@@ -205,15 +222,13 @@ Respond with JSON only:
 // ─── Main scan function ───────────────────────────────────────────────────────
 export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<{
   scanRunId: number;
-  results: Array<{ destination: string; success: boolean; price?: number; error?: string }>;
+  results: Array<{ destination: string; origin: string; success: boolean; price?: number; error?: string }>;
 }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Ensure destinations are seeded
   await seedDestinations();
 
-  // Create a scan run record
   const [scanRun] = await db
     .insert(scanRuns)
     .values({ triggeredBy, status: "running" })
@@ -221,113 +236,115 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
 
   const scanRunId = scanRun!.id;
   const today = todayStr();
-  const results: Array<{ destination: string; success: boolean; price?: number; error?: string }> = [];
+  const results: Array<{ destination: string; origin: string; success: boolean; price?: number; error?: string }> = [];
 
-  // Get active destinations
   const activeDestinations = await db
     .select()
     .from(destinations)
     .where(eq(destinations.isActive, true));
 
+  const origins = await getConfiguredOrigins();
+  const hotDealThreshold = await getHotDealThreshold();
+  const notificationsEnabled = await areNotificationsEnabled();
   let successCount = 0;
 
-  for (const dest of activeDestinations) {
-    try {
-      const departureDate = addDays(today, dest.bookingWindowDays);
-      const returnDate = addDays(departureDate, dest.defaultTripDays);
+  for (const origin of origins) {
+    for (const dest of activeDestinations) {
+      if (dest.iataCode === origin) continue; // skip scanning origin to itself
 
-      const offers = await searchFlights({
-        origin: ORIGIN,
-        destination: dest.iataCode,
-        departureDate,
-        returnDate,
-        adults: 1,
-        max: 5,
-      });
+      try {
+        const departureDate = addDays(today, dest.bookingWindowDays);
+        const returnDate = addDays(departureDate, dest.defaultTripDays);
 
-      if (offers.length === 0) {
-        results.push({ destination: dest.name, success: false, error: "No flights found" });
-        continue;
-      }
+        const offers = await searchFlights({
+          origin,
+          destination: dest.iataCode,
+          departureDate,
+          returnDate,
+          adults: 1,
+          max: 5,
+        });
 
-      // Take the cheapest offer
-      const best = offers.sort((a, b) => a.price - b.price)[0]!;
-
-      // Get 30-day average
-      const thirtyDayAvg = await getThirtyDayAvg(dest.id);
-      const percentVsAvg =
-        thirtyDayAvg !== null
-          ? ((best.price - thirtyDayAvg) / thirtyDayAvg) * 100
-          : null;
-
-      // AI rating
-      const { dealRating, aiSummary, aiTravelTip } = await rateWithAI({
-        destination: dest.name,
-        price: best.price,
-        currency: best.currency,
-        airline: best.airlineCode,
-        stops: best.stops,
-        departureDate: best.departureDate,
-        returnDate: best.returnDate,
-        outboundDuration: best.outboundDuration,
-        returnDuration: best.returnDuration,
-        thirtyDayAvg,
-        percentVsAvg,
-      });
-
-      // Store the scan result with full details
-      await db.insert(flightScans).values({
-        scanRunId,
-        destinationId: dest.id,
-        departureDate: best.departureDate,
-        returnDate: best.returnDate,
-        price: String(best.price),
-        currency: best.currency,
-        airline: best.airline,
-        airlineCode: best.airlineCode,
-        stops: best.stops,
-        outboundDuration: best.outboundDuration,
-        returnDuration: best.returnDuration,
-        seatsAvailable: best.seatsAvailable,
-        cabinClass: best.cabinClass,
-        outboundSegments: best.outboundSegments,
-        returnSegments: best.returnSegments,
-        dealRating,
-        aiSummary,
-        aiTravelTip,
-        thirtyDayAvg: thirtyDayAvg !== null ? String(thirtyDayAvg.toFixed(2)) : null,
-        percentVsAvg: percentVsAvg !== null ? String(percentVsAvg.toFixed(2)) : null,
-        rawData: best.raw,
-      });
-
-      // Push notification if >15% below average
-      if (percentVsAvg !== null && percentVsAvg <= HOT_DEAL_THRESHOLD) {
-        try {
-          await notifyOwner({
-            title: `🔥 Hot Deal Alert: ${dest.name}`,
-            content: `Sydney → ${dest.name} is now $${best.price.toFixed(0)} AUD — ${Math.abs(percentVsAvg).toFixed(1)}% below the 30-day average of $${thirtyDayAvg!.toFixed(0)} AUD. Departs ${best.departureDate}, returns ${best.returnDate}.`,
-          });
-        } catch (notifyErr) {
-          console.error("[Scanner] Notification failed:", notifyErr);
+        if (offers.length === 0) {
+          results.push({ destination: dest.name, origin, success: false, error: "No flights found" });
+          continue;
         }
-      }
 
-      successCount++;
-      results.push({ destination: dest.name, success: true, price: best.price });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Scanner] Failed for ${dest.name}:`, message);
-      results.push({ destination: dest.name, success: false, error: message });
+        const best = offers.sort((a, b) => a.price - b.price)[0]!;
+
+        const thirtyDayAvg = await getThirtyDayAvg(dest.id, origin);
+        const percentVsAvg =
+          thirtyDayAvg !== null
+            ? ((best.price - thirtyDayAvg) / thirtyDayAvg) * 100
+            : null;
+
+        const { dealRating, aiSummary, aiTravelTip } = await rateWithAI({
+          origin,
+          destination: dest.name,
+          price: best.price,
+          currency: best.currency,
+          airline: best.airlineCode,
+          stops: best.stops,
+          departureDate: best.departureDate,
+          returnDate: best.returnDate,
+          outboundDuration: best.outboundDuration,
+          returnDuration: best.returnDuration,
+          thirtyDayAvg,
+          percentVsAvg,
+        });
+
+        await db.insert(flightScans).values({
+          scanRunId,
+          destinationId: dest.id,
+          origin,
+          departureDate: best.departureDate,
+          returnDate: best.returnDate,
+          price: String(best.price),
+          currency: best.currency,
+          airline: best.airline,
+          airlineCode: best.airlineCode,
+          stops: best.stops,
+          outboundDuration: best.outboundDuration,
+          returnDuration: best.returnDuration,
+          seatsAvailable: best.seatsAvailable,
+          cabinClass: best.cabinClass,
+          outboundSegments: best.outboundSegments,
+          returnSegments: best.returnSegments,
+          dealRating,
+          aiSummary,
+          aiTravelTip,
+          thirtyDayAvg: thirtyDayAvg !== null ? String(thirtyDayAvg.toFixed(2)) : null,
+          percentVsAvg: percentVsAvg !== null ? String(percentVsAvg.toFixed(2)) : null,
+          rawData: best.raw,
+        });
+
+        if (notificationsEnabled && percentVsAvg !== null && percentVsAvg <= hotDealThreshold) {
+          try {
+            await notifyOwner({
+              title: `🔥 Hot Deal Alert: ${dest.name}`,
+              content: `${origin} → ${dest.name} is now $${best.price.toFixed(0)} ${best.currency} — ${Math.abs(percentVsAvg).toFixed(1)}% below the 30-day average of $${thirtyDayAvg!.toFixed(0)}. Departs ${best.departureDate}, returns ${best.returnDate}.`,
+            });
+          } catch (notifyErr) {
+            console.error("[Scanner] Notification failed:", notifyErr);
+          }
+        }
+
+        successCount++;
+        results.push({ destination: dest.name, origin, success: true, price: best.price });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[Scanner] Failed for ${dest.name} from ${origin}:`, message);
+        results.push({ destination: dest.name, origin, success: false, error: message });
+      }
     }
   }
 
-  // Update scan run as completed
   await db
     .update(scanRuns)
     .set({
       completedAt: new Date(),
       status: successCount > 0 ? "completed" : "failed",
-      destinationCount: activeDestinations.length,
+      destinationCount: activeDestinations.length * origins.length,
       successCount,
     })
     .where(eq(scanRuns.id, scanRunId));
@@ -336,14 +353,14 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
 }
 
 // ─── Get today's latest scan per destination ──────────────────────────────────
-export async function getTodayDeals() {
+export async function getTodayDeals(origin?: string) {
   const db = await getDb();
   if (!db) return [];
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const whereClause = origin
+    ? eq(flightScans.origin, origin)
+    : undefined;
 
-  // Get the latest scan per destination for today
   const scans = await db
     .select({
       scan: flightScans,
@@ -351,25 +368,30 @@ export async function getTodayDeals() {
     })
     .from(flightScans)
     .innerJoin(destinations, eq(flightScans.destinationId, destinations.id))
-    .where(gte(flightScans.scannedAt, todayStart))
+    .where(whereClause)
     .orderBy(desc(flightScans.scannedAt));
 
-  // Deduplicate: keep latest per destination
-  const seen = new Set<number>();
+  // Keep only the latest scan per (destination, origin) pair
+  const seen = new Set<string>();
   return scans.filter((row) => {
-    if (seen.has(row.destination.id)) return false;
-    seen.add(row.destination.id);
+    const key = `${row.destination.id}:${row.scan.origin}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
 
-// ─── Get 30-day price history for a destination ───────────────────────────────
-export async function getPriceHistory(destinationId: number) {
+// ─── Get price history for a destination (days=0 means all-time) ─────────────
+export async function getPriceHistory(destinationId: number, days = 30, origin = DEFAULT_ORIGIN) {
   const db = await getDb();
   if (!db) return [];
 
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const cutoff = new Date();
+  if (days > 0) cutoff.setDate(cutoff.getDate() - days);
+
+  const whereClause = days > 0
+    ? and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin), gte(flightScans.scannedAt, cutoff))
+    : and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin));
 
   const rows = await db
     .select({
@@ -378,13 +400,8 @@ export async function getPriceHistory(destinationId: number) {
       dealRating: flightScans.dealRating,
     })
     .from(flightScans)
-    .where(
-      and(
-        eq(flightScans.destinationId, destinationId),
-        gte(flightScans.scannedAt, thirtyDaysAgo)
-      )
-    )
-    .orderBy(flightScans.scannedAt);
+    .where(whereClause)
+    .orderBy(asc(flightScans.scannedAt));
 
   // One data point per day (latest scan of the day)
   const byDay = new Map<string, typeof rows[0]>();
@@ -397,6 +414,37 @@ export async function getPriceHistory(destinationId: number) {
     date,
     price: parseFloat(String(row.price)),
     dealRating: row.dealRating,
+  }));
+}
+
+// ─── Get full scan table for a destination ────────────────────────────────────
+export async function getFullScanHistory(destinationId: number, origin = DEFAULT_ORIGIN) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: flightScans.id,
+      scannedAt: flightScans.scannedAt,
+      price: flightScans.price,
+      currency: flightScans.currency,
+      airline: flightScans.airline,
+      stops: flightScans.stops,
+      departureDate: flightScans.departureDate,
+      returnDate: flightScans.returnDate,
+      dealRating: flightScans.dealRating,
+      percentVsAvg: flightScans.percentVsAvg,
+      origin: flightScans.origin,
+    })
+    .from(flightScans)
+    .where(and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin)))
+    .orderBy(desc(flightScans.scannedAt))
+    .limit(90);
+
+  return rows.map((r) => ({
+    ...r,
+    price: parseFloat(String(r.price)),
+    percentVsAvg: r.percentVsAvg ? parseFloat(String(r.percentVsAvg)) : null,
   }));
 }
 
@@ -413,6 +461,11 @@ export async function getLatestScanForDestination(destinationId: number) {
     .limit(1);
 
   return rows[0] ?? null;
+}
+
+// ─── Get available origins from settings ─────────────────────────────────────
+export async function getAvailableOrigins(): Promise<string[]> {
+  return getConfiguredOrigins();
 }
 
 // ─── Get recent scan runs ─────────────────────────────────────────────────────

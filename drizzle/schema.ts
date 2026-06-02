@@ -75,6 +75,7 @@ export const flightScans = mysqlTable("flightScans", {
   stops: int("stops").notNull().default(0),
   outboundDuration: varchar("outboundDuration", { length: 20 }),
   returnDuration: varchar("returnDuration", { length: 20 }),
+  origin: varchar("origin", { length: 3 }).notNull().default("SYD"),
   seatsAvailable: int("seatsAvailable"),          // numberOfBookableSeats from Amadeus
   cabinClass: varchar("cabinClass", { length: 30 }), // ECONOMY / BUSINESS / FIRST
   outboundSegments: json("outboundSegments"),        // full outbound leg breakdown
