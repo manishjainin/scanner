@@ -19,6 +19,7 @@ interface PricePoint {
 interface PriceTrendChartProps {
   data: PricePoint[];
   height?: number;
+  showLowLine?: boolean;
 }
 
 const ratingColor = (rating: string) => {
@@ -62,7 +63,7 @@ const CustomTooltip = ({
   );
 };
 
-export function PriceTrendChart({ data, height = 220 }: PriceTrendChartProps) {
+export function PriceTrendChart({ data, height = 220, showLowLine = true }: PriceTrendChartProps) {
   if (!data || data.length === 0) {
     return (
       <div
@@ -123,6 +124,20 @@ export function PriceTrendChart({ data, height = 220 }: PriceTrendChartProps) {
             position: "insideTopRight",
           }}
         />
+        {showLowLine && minPrice < avg && (
+          <ReferenceLine
+            y={minPrice}
+            stroke="#4ade80"
+            strokeDasharray="4 4"
+            strokeOpacity={0.5}
+            label={{
+              value: `Low $${Math.round(minPrice).toLocaleString("en-AU")}`,
+              fill: "#4ade80",
+              fontSize: 10,
+              position: "insideBottomRight",
+            }}
+          />
+        )}
         <Area
           type="monotone"
           dataKey="price"

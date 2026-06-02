@@ -48,6 +48,9 @@ interface DealDetailDrawerProps {
     aiTravelTip: string | null;
     percentVsAvg: number | null;
     thirtyDayAvg: number | null;
+    lowestIn7Days: number | null;
+    lowestIn30Days: number | null;
+    lowestIn90Days: number | null;
     scannedAt: Date;
   };
 }
@@ -293,6 +296,44 @@ export function DealDetailDrawer({ open, onClose, destination, scan, origin = "S
                 {destination.name} → Sydney
               </p>
               <p className="text-sm text-foreground">{scan.airline} · {scan.returnDuration}</p>
+            </div>
+          )}
+
+          {/* Price context — historical lows */}
+          {(scan.lowestIn7Days != null || scan.lowestIn30Days != null || scan.lowestIn90Days != null) && (
+            <div className="bg-card border border-border rounded-xl p-4">
+              <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3">Price Context</p>
+              <div className="space-y-2.5">
+                {[
+                  { label: "7-day low",  value: scan.lowestIn7Days },
+                  { label: "30-day low", value: scan.lowestIn30Days },
+                  { label: "90-day low", value: scan.lowestIn90Days },
+                ].map(({ label, value }) => {
+                  if (value == null) return null;
+                  const isCurrentLow = scan.price <= value;
+                  const diff = ((scan.price - value) / value) * 100;
+                  return (
+                    <div key={label} className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground w-20">{label}</span>
+                        <span className="text-sm font-semibold text-foreground">
+                          ${Math.round(value).toLocaleString("en-AU")}
+                        </span>
+                        {isCurrentLow && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 font-semibold">
+                            current low
+                          </span>
+                        )}
+                      </div>
+                      {!isCurrentLow && (
+                        <span className="text-xs text-red-400">
+                          +{diff.toFixed(1)}% above
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

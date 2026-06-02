@@ -51,6 +51,9 @@ type DealRow = {
     returnSegments: unknown;
     scannedAt: Date;
     origin: string;
+    lowestIn7Days: string | number | null;
+    lowestIn30Days: string | number | null;
+    lowestIn90Days: string | number | null;
   };
   destination: {
     id: number;
@@ -360,6 +363,9 @@ export default function Home() {
               dealRating={row.scan.dealRating}
               aiSummary={row.scan.aiSummary}
               percentVsAvg={row.scan.percentVsAvg !== null ? parseFloat(String(row.scan.percentVsAvg)) : null}
+              lowestIn7Days={row.scan.lowestIn7Days !== null ? parseFloat(String(row.scan.lowestIn7Days)) : null}
+              lowestIn30Days={row.scan.lowestIn30Days !== null ? parseFloat(String(row.scan.lowestIn30Days)) : null}
+              lowestIn90Days={row.scan.lowestIn90Days !== null ? parseFloat(String(row.scan.lowestIn90Days)) : null}
               seatsAvailable={row.scan.seatsAvailable}
               animationDelay={i * 35}
               onClick={() => setSelectedDeal(row)}
@@ -405,6 +411,9 @@ export default function Home() {
             aiTravelTip: selectedDeal.scan.aiTravelTip,
             percentVsAvg: selectedDeal.scan.percentVsAvg !== null ? parseFloat(String(selectedDeal.scan.percentVsAvg)) : null,
             thirtyDayAvg: selectedDeal.scan.thirtyDayAvg !== null ? parseFloat(String(selectedDeal.scan.thirtyDayAvg)) : null,
+            lowestIn7Days: selectedDeal.scan.lowestIn7Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn7Days)) : null,
+            lowestIn30Days: selectedDeal.scan.lowestIn30Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn30Days)) : null,
+            lowestIn90Days: selectedDeal.scan.lowestIn90Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn90Days)) : null,
             scannedAt: new Date(selectedDeal.scan.scannedAt),
           }}
         />

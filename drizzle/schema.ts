@@ -85,6 +85,9 @@ export const flightScans = mysqlTable("flightScans", {
   aiTravelTip: text("aiTravelTip"),
   thirtyDayAvg: decimal("thirtyDayAvg", { precision: 10, scale: 2 }),
   percentVsAvg: decimal("percentVsAvg", { precision: 6, scale: 2 }),
+  lowestIn7Days: decimal("lowestIn7Days", { precision: 10, scale: 2 }),
+  lowestIn30Days: decimal("lowestIn30Days", { precision: 10, scale: 2 }),
+  lowestIn90Days: decimal("lowestIn90Days", { precision: 10, scale: 2 }),
   rawData: json("rawData"),
 });
 

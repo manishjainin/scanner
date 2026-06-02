@@ -6,7 +6,7 @@
  * - Triggers owner push notification when fare is >15% below 30-day average
  */
 
-import { and, avg, desc, eq, gte, asc } from "drizzle-orm";
+import { and, avg, desc, eq, gte, asc, min } from "drizzle-orm";
 import { getDb, getSetting } from "./db";
 import { destinations, flightScans, scanRuns } from "../drizzle/schema";
 import { searchFlights } from "./amadeus";
@@ -91,6 +91,36 @@ function addDays(dateStr: string, days: number): string {
 
 function todayStr(): string {
   return new Date().toISOString().split("T")[0]!;
+}
+
+// ─── Historical lows for a destination ───────────────────────────────────────
+async function getHistoricalLows(
+  destinationId: number,
+  origin = DEFAULT_ORIGIN,
+): Promise<{ low7d: number | null; low30d: number | null; low90d: number | null }> {
+  const db = await getDb();
+  if (!db) return { low7d: null, low30d: null, low90d: null };
+
+  const now = new Date();
+  const cut7  = new Date(now); cut7.setDate(now.getDate() - 7);
+  const cut30 = new Date(now); cut30.setDate(now.getDate() - 30);
+  const cut90 = new Date(now); cut90.setDate(now.getDate() - 90);
+
+  const [r7, r30, r90] = await Promise.all([
+    db.select({ v: min(flightScans.price) }).from(flightScans)
+      .where(and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin), gte(flightScans.scannedAt, cut7))),
+    db.select({ v: min(flightScans.price) }).from(flightScans)
+      .where(and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin), gte(flightScans.scannedAt, cut30))),
+    db.select({ v: min(flightScans.price) }).from(flightScans)
+      .where(and(eq(flightScans.destinationId, destinationId), eq(flightScans.origin, origin), gte(flightScans.scannedAt, cut90))),
+  ]);
+
+  const parse = (v: string | null | undefined) => (v ? parseFloat(String(v)) : null);
+  return {
+    low7d:  parse(r7[0]?.v),
+    low30d: parse(r30[0]?.v),
+    low90d: parse(r90[0]?.v),
+  };
 }
 
 // ─── 30-day average price for a destination ───────────────────────────────────
@@ -272,11 +302,19 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
 
         const best = offers.sort((a, b) => a.price - b.price)[0]!;
 
-        const thirtyDayAvg = await getThirtyDayAvg(dest.id, origin);
+        const [thirtyDayAvg, historicalLows] = await Promise.all([
+          getThirtyDayAvg(dest.id, origin),
+          getHistoricalLows(dest.id, origin),
+        ]);
         const percentVsAvg =
           thirtyDayAvg !== null
             ? ((best.price - thirtyDayAvg) / thirtyDayAvg) * 100
             : null;
+
+        // Include current price so stored lows reflect "best seen including today"
+        const lowestIn7Days  = historicalLows.low7d  !== null ? Math.min(historicalLows.low7d,  best.price) : best.price;
+        const lowestIn30Days = historicalLows.low30d !== null ? Math.min(historicalLows.low30d, best.price) : best.price;
+        const lowestIn90Days = historicalLows.low90d !== null ? Math.min(historicalLows.low90d, best.price) : best.price;
 
         const { dealRating, aiSummary, aiTravelTip } = await rateWithAI({
           origin,
@@ -315,6 +353,9 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
           aiTravelTip,
           thirtyDayAvg: thirtyDayAvg !== null ? String(thirtyDayAvg.toFixed(2)) : null,
           percentVsAvg: percentVsAvg !== null ? String(percentVsAvg.toFixed(2)) : null,
+          lowestIn7Days:  String(lowestIn7Days.toFixed(2)),
+          lowestIn30Days: String(lowestIn30Days.toFixed(2)),
+          lowestIn90Days: String(lowestIn90Days.toFixed(2)),
           rawData: best.raw,
         });
 

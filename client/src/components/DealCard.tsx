@@ -22,6 +22,9 @@ interface DealCardProps {
   dealRating: "Hot Deal" | "Good Price" | "Standard";
   aiSummary: string | null;
   percentVsAvg: number | null;
+  lowestIn7Days?: number | null;
+  lowestIn30Days?: number | null;
+  lowestIn90Days?: number | null;
   seatsAvailable: number | null;
   animationDelay?: number;
   onClick?: () => void;
@@ -38,6 +41,7 @@ export function DealCard({
   price, currency, airline, stops,
   departureDate, returnDate, outboundDuration,
   dealRating, aiSummary, percentVsAvg,
+  lowestIn7Days, lowestIn30Days, lowestIn90Days,
   seatsAvailable, animationDelay = 0, onClick,
 }: DealCardProps) {
   const emoji = REGION_EMOJI[region] ?? "✈️";
@@ -60,6 +64,13 @@ export function DealCard({
     seatsAvailable === null ? "" :
     seatsAvailable <= 3 ? "text-red-400" :
     seatsAvailable <= 7 ? "text-orange-400" : "text-emerald-400";
+
+  // Determine best historical-low window this price qualifies for
+  const historicalLowLabel =
+    lowestIn7Days  != null && price <= lowestIn7Days  ? { label: "7-day low",  style: "bg-orange-500/15 text-orange-400" } :
+    lowestIn30Days != null && price <= lowestIn30Days ? { label: "30-day low", style: "bg-amber-500/15 text-amber-400" } :
+    lowestIn90Days != null && price <= lowestIn90Days ? { label: "90-day low", style: "bg-secondary text-muted-foreground" } :
+    null;
 
   const flightsUrl = googleFlightsUrl(origin, iataCode, departureDate, returnDate);
 
@@ -95,11 +106,26 @@ export function DealCard({
             ${Math.round(price).toLocaleString("en-AU")}
           </span>
           <span className="text-sm text-muted-foreground">{currency}</span>
+          {historicalLowLabel && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${historicalLowLabel.style}`}>
+              {historicalLowLabel.label}
+            </span>
+          )}
         </div>
         {percentVsAvg !== null && PctIcon && (
           <div className={`flex items-center gap-1 mt-1 text-xs ${pctColor}`}>
             <PctIcon className="w-3 h-3" />
             <span>{Math.abs(percentVsAvg).toFixed(1)}% {percentVsAvg < 0 ? "below" : "above"} 30-day avg</span>
+          </div>
+        )}
+        {!historicalLowLabel && (lowestIn30Days != null || lowestIn90Days != null) && (
+          <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+            {lowestIn30Days != null && (
+              <span>30d low: <span className="text-foreground">${Math.round(lowestIn30Days).toLocaleString("en-AU")}</span></span>
+            )}
+            {lowestIn90Days != null && (
+              <span>90d low: <span className="text-foreground">${Math.round(lowestIn90Days).toLocaleString("en-AU")}</span></span>
+            )}
           </div>
         )}
       </div>
