@@ -178,6 +178,28 @@
     background-clip: text;
   }
 
+  /* Sidebar nav items */
+  .sidebar-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: oklch(0.55 0.01 260);
+    transition: background 140ms ease, color 140ms ease;
+    width: 100%;
+  }
+  .sidebar-nav-item:hover {
+    background: oklch(0.18 0.01 260);
+    color: oklch(0.85 0.01 90);
+  }
+  .sidebar-nav-item.active {
+    background: oklch(0.78 0.15 75 / 0.12);
+    color: oklch(0.78 0.15 75);
+  }
+
   /* Skeleton shimmer */
   .skeleton-shimmer {
     background: linear-gradient(90deg,

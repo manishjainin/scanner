@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import {
   RefreshCw, Flame, TrendingDown, Minus, Clock,
   CheckCircle2, AlertCircle, Loader2, Globe, PlaneTakeoff,
+  Search, ArrowUpDown,
 } from "lucide-react";
 import { format, formatDistanceToNow, isToday } from "date-fns";
 
@@ -49,6 +50,7 @@ type DealRow = {
     outboundSegments: unknown;
     returnSegments: unknown;
     scannedAt: Date;
+    origin: string;
   };
   destination: {
     id: number;
@@ -60,12 +62,21 @@ type DealRow = {
   };
 };
 
+const SORT_OPTIONS = [
+  { value: "deal", label: "Best Deal" },
+  { value: "price", label: "Lowest Price" },
+  { value: "savings", label: "Biggest Saving" },
+] as const;
+type SortOption = (typeof SORT_OPTIONS)[number]["value"];
+
 export default function Home() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [dealFilter, setDealFilter] = useState<DealFilter>("all");
   const [continentFilter, setContinentFilter] = useState<ContinentFilter>("All");
   const [originFilter, setOriginFilter] = useState<string>("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState<SortOption>("deal");
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null);
 
   const { data: availableOrigins } = trpc.scans.availableOrigins.useQuery();
@@ -84,11 +95,35 @@ export default function Home() {
     onError: (err) => toast.error(`Scan failed: ${err.message}`),
   });
 
-  const filteredDeals = deals?.filter((d) => {
-    const matchDeal = dealFilter === "all" || d.scan.dealRating === dealFilter;
-    const matchContinent = continentFilter === "All" || d.destination.continent === continentFilter;
-    return matchDeal && matchContinent;
-  }) as DealRow[] | undefined;
+  const RATING_ORDER = { "Hot Deal": 0, "Good Price": 1, "Standard": 2 } as const;
+
+  const filteredDeals = (deals as DealRow[] | undefined)
+    ?.filter((d) => {
+      const matchDeal = dealFilter === "all" || d.scan.dealRating === dealFilter;
+      const matchContinent = continentFilter === "All" || d.destination.continent === continentFilter;
+      const q = searchQuery.toLowerCase();
+      const matchSearch = !q ||
+        d.destination.name.toLowerCase().includes(q) ||
+        d.destination.iataCode.toLowerCase().includes(q) ||
+        d.destination.country.toLowerCase().includes(q);
+      return matchDeal && matchContinent && matchSearch;
+    })
+    .sort((a, b) => {
+      if (sortBy === "price") {
+        return parseFloat(String(a.scan.price)) - parseFloat(String(b.scan.price));
+      }
+      if (sortBy === "savings") {
+        const ap = a.scan.percentVsAvg !== null ? parseFloat(String(a.scan.percentVsAvg)) : 0;
+        const bp = b.scan.percentVsAvg !== null ? parseFloat(String(b.scan.percentVsAvg)) : 0;
+        return ap - bp;
+      }
+      // "deal" — Hot > Good > Standard, then by savings within tier
+      const rDiff = RATING_ORDER[a.scan.dealRating] - RATING_ORDER[b.scan.dealRating];
+      if (rDiff !== 0) return rDiff;
+      const ap = a.scan.percentVsAvg !== null ? parseFloat(String(a.scan.percentVsAvg)) : 0;
+      const bp = b.scan.percentVsAvg !== null ? parseFloat(String(b.scan.percentVsAvg)) : 0;
+      return ap - bp;
+    });
 
   const hotCount = deals?.filter((d) => d.scan.dealRating === "Hot Deal").length ?? 0;
   const goodCount = deals?.filter((d) => d.scan.dealRating === "Good Price").length ?? 0;
@@ -122,6 +157,29 @@ export default function Home() {
           </Button>
         )}
       </div>
+
+      {/* Stale data warning */}
+      {lastScan && !isLoading && (() => {
+        const ageHours = (Date.now() - new Date(lastScan).getTime()) / 3_600_000;
+        return ageHours > 48;
+      })() && (
+        <div className="mb-6 flex items-center gap-3 px-4 py-3 rounded-xl border border-orange-500/20 bg-orange-500/5 text-xs text-orange-400">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span>
+            Prices last updated {formatDistanceToNow(new Date(lastScan), { addSuffix: true })}. Run a scan to refresh.
+          </span>
+          {isAdmin && (
+            <button
+              onClick={() => triggerScan.mutate()}
+              disabled={triggerScan.isPending}
+              className="ml-auto flex items-center gap-1.5 font-semibold hover:text-orange-300 transition-colors flex-shrink-0"
+            >
+              {triggerScan.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Scan Now
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Stats */}
       {deals && deals.length > 0 && (
@@ -197,6 +255,34 @@ export default function Home() {
         })}
       </div>
 
+      {/* Search + Sort */}
+      {!isLoading && deals && deals.length > 0 && (
+        <div className="flex items-center gap-3 mb-5 flex-wrap">
+          <div className="relative flex-1 min-w-48">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search destination, city, country…"
+              className="w-full h-9 pl-8 pr-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortOption)}
+              className="h-9 rounded-lg bg-secondary border border-border text-sm text-foreground px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       {/* Error state */}
       {isError && !isLoading && (
         <div className="flex flex-col items-center justify-center py-24 text-center">
@@ -261,6 +347,7 @@ export default function Home() {
               iataCode={row.destination.iataCode}
               region={row.destination.region}
               country={row.destination.country}
+              origin={row.scan.origin}
               price={parseFloat(String(row.scan.price))}
               currency={row.scan.currency}
               airline={row.scan.airline ?? row.scan.airlineCode ?? ""}
@@ -292,6 +379,7 @@ export default function Home() {
         <DealDetailDrawer
           open={!!selectedDeal}
           onClose={() => setSelectedDeal(null)}
+          origin={selectedDeal.scan.origin}
           destination={{
             name: selectedDeal.destination.name,
             iataCode: selectedDeal.destination.iataCode,

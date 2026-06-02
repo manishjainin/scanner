@@ -1,5 +1,6 @@
-import { Plane, Clock, ArrowRight, TrendingDown, TrendingUp, Minus, Armchair } from "lucide-react";
+import { Plane, Clock, ArrowRight, TrendingDown, TrendingUp, Minus, Armchair, ExternalLink } from "lucide-react";
 import { DealRatingBadge } from "./DealRatingBadge";
+import { googleFlightsUrl } from "@/lib/flightLinks";
 import { format, parseISO } from "date-fns";
 
 interface DealCardProps {
@@ -8,6 +9,7 @@ interface DealCardProps {
   iataCode: string;
   region: string;
   country?: string;
+  origin?: string;
   price: number;
   currency: string;
   airline: string;
@@ -32,7 +34,7 @@ const REGION_EMOJI: Record<string, string> = {
 };
 
 export function DealCard({
-  destinationName, iataCode, region, country,
+  destinationName, iataCode, region, country, origin = "SYD",
   price, currency, airline, stops,
   departureDate, returnDate, outboundDuration,
   dealRating, aiSummary, percentVsAvg,
@@ -59,6 +61,8 @@ export function DealCard({
     seatsAvailable <= 3 ? "text-red-400" :
     seatsAvailable <= 7 ? "text-orange-400" : "text-emerald-400";
 
+  const flightsUrl = googleFlightsUrl(origin, iataCode, departureDate, returnDate);
+
   return (
     <div
       className="deal-card bg-card border border-border rounded-xl p-5 cursor-pointer fade-in-up"
@@ -73,7 +77,12 @@ export function DealCard({
           </div>
           <div>
             <h3 className="font-semibold text-foreground text-base leading-tight">{destinationName}</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">{iataCode} · {country ?? region}</p>
+            <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1.5">
+              <span>{iataCode} · {country ?? region}</span>
+              {origin !== "SYD" && (
+                <span className="bg-secondary px-1.5 py-0.5 rounded text-xs font-mono">{origin}</span>
+              )}
+            </p>
           </div>
         </div>
         <DealRatingBadge rating={dealRating} />
@@ -114,7 +123,7 @@ export function DealCard({
         {seatsAvailable !== null && (
           <div className={`flex items-center gap-1.5 text-xs ${seatsColor}`}>
             <Armchair className="w-3 h-3 flex-shrink-0" />
-            <span>{seatsAvailable} seat{seatsAvailable !== 1 ? "s" : ""} available</span>
+            <span>{seatsAvailable} seat{seatsAvailable !== 1 ? "s" : ""} left</span>
           </div>
         )}
       </div>
@@ -126,8 +135,18 @@ export function DealCard({
         </p>
       )}
 
-      {/* CTA */}
-      <div className="flex items-center justify-end mt-3">
+      {/* Footer CTAs */}
+      <div className="flex items-center justify-between mt-3">
+        <a
+          href={flightsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+        >
+          <ExternalLink className="w-3 h-3" />
+          Google Flights
+        </a>
         <span className="text-xs text-primary flex items-center gap-1 font-medium">
           View details <ArrowRight className="w-3 h-3" />
         </span>

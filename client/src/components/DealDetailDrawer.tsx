@@ -1,8 +1,8 @@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { DealRatingBadge } from "./DealRatingBadge";
+import { googleFlightsUrl } from "@/lib/flightLinks";
 import {
-  Plane, Calendar, Clock, Users, ArrowRight,
-  ChevronRight, MapPin, Armchair,
+  Plane, Calendar, Clock, MapPin, Armchair, ExternalLink,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
@@ -28,6 +28,7 @@ interface DealDetailDrawerProps {
     region: string;
     country: string;
   };
+  origin?: string;
   scan: {
     price: number;
     currency: string;
@@ -159,7 +160,7 @@ function ItinerarySection({ title, segments, duration }: {
   );
 }
 
-export function DealDetailDrawer({ open, onClose, destination, scan }: DealDetailDrawerProps) {
+export function DealDetailDrawer({ open, onClose, destination, scan, origin = "SYD" }: DealDetailDrawerProps) {
   const emoji = REGION_EMOJI[destination.region] ?? "✈️";
   const tripDays = Math.round(
     (new Date(scan.returnDate).getTime() - new Date(scan.departureDate).getTime()) /
@@ -233,6 +234,16 @@ export function DealDetailDrawer({ open, onClose, destination, scan }: DealDetai
                 </div>
               )}
             </div>
+            <a
+              href={googleFlightsUrl(origin, destination.iataCode, scan.departureDate, scan.returnDate)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-xs font-semibold transition-colors"
+              style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Search on Google Flights
+            </a>
           </div>
 
           {/* Trip summary */}

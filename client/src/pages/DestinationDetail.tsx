@@ -4,11 +4,12 @@ import { trpc } from "@/lib/trpc";
 import { PriceTrendChart } from "@/components/PriceTrendChart";
 import { DealRatingBadge } from "@/components/DealRatingBadge";
 import { AIChatBox, type Message } from "@/components/AIChatBox";
+import { googleFlightsUrl } from "@/lib/flightLinks";
 import { Button } from "@/components/ui/button";
 import {
   ArrowLeft, Plane, Clock, Calendar, TrendingDown, TrendingUp,
   Minus, MapPin, Sparkles, AlertCircle, RefreshCw, MessageSquare,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, ExternalLink,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
@@ -239,11 +240,26 @@ export default function DestinationDetail() {
                     <span className="text-sm text-muted-foreground">{latestScan.currency} return</span>
                   </div>
                   {percentVsAvg !== null && PctIcon && (
-                    <div className={`flex items-center gap-1.5 text-xs ${pctColor}`}>
+                    <div className={`flex items-center gap-1.5 text-xs ${pctColor} mb-3`}>
                       <PctIcon className="w-3.5 h-3.5" />
                       {Math.abs(percentVsAvg).toFixed(1)}% {percentVsAvg < 0 ? "below" : "above"} 30-day average
                     </div>
                   )}
+                  <a
+                    href={googleFlightsUrl(
+                      latestScan.origin ?? "SYD",
+                      destination.iataCode,
+                      latestScan.departureDate,
+                      latestScan.returnDate,
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-semibold transition-colors"
+                    style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Search on Google Flights
+                  </a>
                 </div>
 
                 <div className="bg-card border border-border rounded-xl p-5 space-y-4">
