@@ -24,7 +24,11 @@ import {
   getRecentScanRuns,
   getAvailableOrigins,
 } from "./scanner";
-import { checkAmadeusConnection } from "./amadeus";
+import {
+  checkAmadeusConnection,
+  getAmadeusConfigSummary,
+  invalidateAmadeusToken,
+} from "./amadeus";
 import { sdk } from "./_core/sdk";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -243,18 +247,96 @@ export const appRouter = router({
       }),
 
     checkConnections: adminProcedure.query(async () => {
-      const [amadeusOk, openaiOk] = await Promise.all([
+      const [amadeusOk, openaiOk, amadeusEnv] = await Promise.all([
         checkAmadeusConnection(),
         checkOpenAIConnection(),
+        getSetting("amadeus.activeEnv"),
       ]);
+      const resolvedEnv = amadeusEnv === "production" ? "production"
+        : process.env.AMADEUS_ENV === "production" ? "production" : "test";
       return {
         amadeus: amadeusOk,
         openai: openaiOk,
         amadeusConfigured: !!(process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIENT_SECRET),
         openaiConfigured: !!process.env.OPENAI_API_KEY,
-        amadeusEnv: process.env.AMADEUS_ENV === "production" ? "production" : "test",
+        amadeusEnv: resolvedEnv,
       };
     }),
+  }),
+
+  amadeus: router({
+    config: adminProcedure.query(async () => getAmadeusConfigSummary()),
+
+    saveCredentials: adminProcedure
+      .input(z.object({
+        env: z.enum(["test", "production"]),
+        clientId: z.string().min(1).max(100),
+        clientSecret: z.string().min(1).max(200),
+      }))
+      .mutation(async ({ input }) => {
+        await Promise.all([
+          setSetting(`amadeus.${input.env}.clientId`, input.clientId.trim()),
+          setSetting(`amadeus.${input.env}.clientSecret`, input.clientSecret.trim()),
+        ]);
+        invalidateAmadeusToken();
+        return { success: true };
+      }),
+
+    setChallenge: adminProcedure
+      .input(z.object({ challenge: z.string().min(8).max(100) }))
+      .mutation(async ({ input }) => {
+        await setSetting("amadeus.challenge", input.challenge);
+        return { success: true };
+      }),
+
+    switchEnv: adminProcedure
+      .input(z.object({
+        env: z.enum(["test", "production"]),
+        challenge: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        if (input.env === "production") {
+          const stored = await getSetting("amadeus.challenge");
+          if (stored) {
+            if (!input.challenge || input.challenge !== stored) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "Incorrect challenge passphrase" });
+            }
+          }
+          const prodConfigured = !!(await getSetting("amadeus.prod.clientId"));
+          if (!prodConfigured) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Production credentials have not been saved yet" });
+          }
+        }
+        await setSetting("amadeus.activeEnv", input.env);
+        invalidateAmadeusToken();
+        return { success: true };
+      }),
+
+    testConnection: adminProcedure
+      .input(z.object({ env: z.enum(["test", "production"]) }))
+      .mutation(async ({ input }) => {
+        const [id, secret] = await Promise.all([
+          getSetting(`amadeus.${input.env}.clientId`),
+          getSetting(`amadeus.${input.env}.clientSecret`),
+        ]);
+        const clientId     = id     || (input.env === "test" ? process.env.AMADEUS_CLIENT_ID     : null) || "";
+        const clientSecret = secret || (input.env === "test" ? process.env.AMADEUS_CLIENT_SECRET : null) || "";
+        if (!clientId || !clientSecret) {
+          return { ok: false, message: "Credentials not configured" };
+        }
+        const baseUrl = input.env === "production" ? "https://api.amadeus.com" : "https://test.api.amadeus.com";
+        try {
+          const body = new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret });
+          const res = await fetch(`${baseUrl}/v1/security/oauth2/token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: body.toString(),
+          });
+          return res.ok ? { ok: true, message: "Connected successfully" } : { ok: false, message: `Auth failed (${res.status})` };
+        } catch (e) {
+          return { ok: false, message: String(e) };
+        }
+      }),
   }),
 
   ai: router({

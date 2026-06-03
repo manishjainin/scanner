@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import {
   XCircle, Loader2, Plus, Pencil, Trash2,
   Settings as SettingsIcon, Wifi, WifiOff, Save, X, Bell, PlaneTakeoff,
+  ShieldAlert, Eye, EyeOff, FlaskConical, Rocket, RefreshCw, CheckCircle2,
 } from "lucide-react";
 import { LocalLoginForm } from "@/components/LocalLoginForm";
 
@@ -223,37 +224,27 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* API Connection Status */}
+      {/* Amadeus API Configuration */}
+      <AmadeusSection />
+
+      {/* OpenAI connection status */}
       <section className="mb-8">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-semibold text-foreground">API Connection Status</h2>
-          <button
-            onClick={() => refetchConnections()}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-          >
+          <h2 className="text-base font-semibold text-foreground">Other Connections</h2>
+          <button onClick={() => refetchConnections()} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
             <Loader2 className={`w-3 h-3 ${connLoading ? "animate-spin" : ""}`} />
             Refresh
           </button>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <ConnectionCard
-            name="Amadeus Flight API"
-            description={`Flight offers search · OAuth token · ${connections?.amadeusEnv === "production" ? "Production" : "Test"} environment`}
-            configured={connections?.amadeusConfigured ?? false}
-            connected={connections?.amadeus ?? false}
-            loading={connLoading}
-            envBadge={connections?.amadeusEnv}
-          />
-          <ConnectionCard
-            name="OpenAI GPT-5-mini"
-            description="AI deal rating · Travel tips"
-            configured={connections?.openaiConfigured ?? false}
-            connected={connections?.openai ?? false}
-            loading={connLoading}
-          />
-        </div>
+        <ConnectionCard
+          name="OpenAI GPT-4o-mini"
+          description="AI deal rating · Travel tips · AI chat"
+          configured={connections?.openaiConfigured ?? false}
+          connected={connections?.openai ?? false}
+          loading={connLoading}
+        />
         <p className="text-xs text-muted-foreground mt-3">
-          API credentials are stored as environment secrets. To update them, contact your administrator or use the Secrets panel.
+          OpenAI key is set via environment variable (<span className="font-mono">OPENAI_API_KEY</span>).
         </p>
       </section>
 
@@ -451,6 +442,326 @@ export default function Settings() {
         </div>
       </section>
     </div>
+  );
+}
+
+// ─── Amadeus API configuration panel ─────────────────────────────────────────
+
+function CredentialForm({ env, label, icon: Icon, onSaved }: {
+  env: "test" | "production";
+  label: string;
+  icon: React.ElementType;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const save = trpc.amadeus.saveCredentials.useMutation({
+    onSuccess: () => { toast.success(`${label} credentials saved`); setOpen(false); setClientId(""); setClientSecret(""); onSaved(); },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const testConn = trpc.amadeus.testConnection.useMutation({
+    onSuccess: (r) => setTestResult(r),
+    onError: (e) => setTestResult({ ok: false, message: e.message }),
+  });
+
+  return (
+    <div>
+      <button
+        onClick={() => { setOpen((v) => !v); setTestResult(null); }}
+        className="text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1 font-medium"
+      >
+        {open ? <X className="w-3 h-3" /> : <Pencil className="w-3 h-3" />}
+        {open ? "Cancel" : "Update credentials"}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3 p-4 bg-secondary/30 rounded-lg border border-border">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Client ID</label>
+            <Input
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="e.g. aBcDeF1234567890"
+              className="bg-secondary border-border text-foreground text-sm font-mono"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Client Secret</label>
+            <div className="relative">
+              <Input
+                type={showSecret ? "text" : "password"}
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder="••••••••••••••••"
+                className="bg-secondary border-border text-foreground text-sm font-mono pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecret((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+          {testResult && (
+            <p className={`text-xs flex items-center gap-1.5 ${testResult.ok ? "text-emerald-400" : "text-red-400"}`}>
+              {testResult.ok ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+              {testResult.message}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => save.mutate({ env, clientId: clientId.trim(), clientSecret: clientSecret.trim() })}
+              disabled={save.isPending || !clientId.trim() || !clientSecret.trim()}
+              className="text-xs h-8"
+              style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)", fontWeight: 600 }}
+            >
+              {save.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => testConn.mutate({ env })}
+              disabled={testConn.isPending || !clientId.trim() || !clientSecret.trim()}
+              className="text-xs h-8"
+            >
+              {testConn.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+              Test
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Credentials are stored encrypted in the database and never exposed in responses.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AmadeusSection() {
+  const { data: config, refetch } = trpc.amadeus.config.useQuery(undefined, { refetchOnWindowFocus: false });
+
+  const [showChallengeModal, setShowChallengeModal] = useState(false);
+  const [challengeInput, setChallengeInput] = useState("");
+  const [newChallenge, setNewChallenge] = useState("");
+  const [showSetChallenge, setShowSetChallenge] = useState(false);
+  const [showCurrentChallenge, setShowCurrentChallenge] = useState(false);
+
+  const switchEnv = trpc.amadeus.switchEnv.useMutation({
+    onSuccess: () => {
+      toast.success("Amadeus environment switched");
+      setChallengeInput("");
+      setShowChallengeModal(false);
+      refetch();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const setChallenge = trpc.amadeus.setChallenge.useMutation({
+    onSuccess: () => {
+      toast.success("Challenge passphrase updated");
+      setNewChallenge("");
+      setShowSetChallenge(false);
+      refetch();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const isProd = config?.activeEnv === "production";
+
+  return (
+    <section className="mb-8">
+      <div className="flex items-center gap-2 mb-4">
+        <Rocket className="w-4 h-4 text-muted-foreground" />
+        <h2 className="text-base font-semibold text-foreground">Amadeus API</h2>
+        <span className={`ml-auto text-xs px-2.5 py-1 rounded-full font-semibold ${
+          isProd ? "bg-orange-500/15 text-orange-400" : "bg-blue-500/15 text-blue-400"
+        }`}>
+          {isProd ? "⚡ Production" : "🧪 Test"} active
+        </span>
+      </div>
+
+      <div className="space-y-4">
+        {/* Test credentials */}
+        <div className={`bg-card border rounded-xl p-5 ${!isProd ? "border-blue-500/30" : "border-border"}`}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <FlaskConical className="w-4 h-4 text-blue-400" />
+              <span className="text-sm font-semibold text-foreground">Test Environment</span>
+              {config?.test.fromEnv && (
+                <span className="text-xs text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">from env</span>
+              )}
+            </div>
+            {config?.test.configured
+              ? <span className="text-xs text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Configured</span>
+              : <span className="text-xs text-muted-foreground">Not configured</span>}
+          </div>
+          {config?.test.clientId && (
+            <p className="text-xs text-muted-foreground mb-3 font-mono">
+              ID: {config.test.clientId} &nbsp;·&nbsp; Secret: {config.test.clientSecretMasked}
+            </p>
+          )}
+          <CredentialForm env="test" label="Test" icon={FlaskConical} onSaved={refetch} />
+          {!isProd && (
+            <p className="text-xs text-blue-400 mt-2">Currently active</p>
+          )}
+          {isProd && config?.test.configured && (
+            <button
+              onClick={() => switchEnv.mutate({ env: "test" })}
+              disabled={switchEnv.isPending}
+              className="mt-2 text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+            >
+              {switchEnv.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              Switch to Test
+            </button>
+          )}
+        </div>
+
+        {/* Production credentials */}
+        <div className={`bg-card border rounded-xl p-5 ${isProd ? "border-orange-500/30" : "border-border"}`}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Rocket className="w-4 h-4 text-orange-400" />
+              <span className="text-sm font-semibold text-foreground">Production Environment</span>
+            </div>
+            {config?.production.configured
+              ? <span className="text-xs text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Configured</span>
+              : <span className="text-xs text-muted-foreground">Not configured</span>}
+          </div>
+          {config?.production.clientId && (
+            <p className="text-xs text-muted-foreground mb-3 font-mono">
+              ID: {config.production.clientId} &nbsp;·&nbsp; Secret: {config.production.clientSecretMasked}
+            </p>
+          )}
+          <CredentialForm env="production" label="Production" icon={Rocket} onSaved={refetch} />
+          {isProd && (
+            <p className="text-xs text-orange-400 mt-2 flex items-center gap-1">
+              <ShieldAlert className="w-3 h-3" />Currently active — live fares will be charged
+            </p>
+          )}
+          {!isProd && config?.production.configured && (
+            <button
+              onClick={() => setShowChallengeModal(true)}
+              className="mt-2 text-xs text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-1 font-medium"
+            >
+              <ShieldAlert className="w-3 h-3" />
+              Activate Production
+            </button>
+          )}
+          {!isProd && !config?.production.configured && (
+            <p className="text-xs text-muted-foreground mt-2">Save production credentials above before activating.</p>
+          )}
+        </div>
+
+        {/* Challenge passphrase management */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <ShieldAlert className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-semibold text-foreground">Production Challenge Passphrase</span>
+            {config?.challengeSet
+              ? <span className="text-xs text-emerald-400 ml-auto flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Set</span>
+              : <span className="text-xs text-orange-400 ml-auto">Not set — no challenge required</span>}
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">
+            A passphrase that must be entered each time you switch to the production API. Protects against accidental activation.
+          </p>
+          <button
+            onClick={() => setShowSetChallenge((v) => !v)}
+            className="text-xs text-primary hover:text-primary/80 font-medium flex items-center gap-1"
+          >
+            {showSetChallenge ? <X className="w-3 h-3" /> : <Pencil className="w-3 h-3" />}
+            {config?.challengeSet ? (showSetChallenge ? "Cancel" : "Change passphrase") : "Set passphrase"}
+          </button>
+          {showSetChallenge && (
+            <div className="mt-3 flex items-center gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showCurrentChallenge ? "text" : "password"}
+                  value={newChallenge}
+                  onChange={(e) => setNewChallenge(e.target.value)}
+                  placeholder="Min 8 characters"
+                  className="bg-secondary border-border text-foreground text-sm pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCurrentChallenge((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showCurrentChallenge ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setChallenge.mutate({ challenge: newChallenge })}
+                disabled={setChallenge.isPending || newChallenge.length < 8}
+                className="text-xs h-9 shrink-0"
+                style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)", fontWeight: 600 }}
+              >
+                {setChallenge.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Challenge modal */}
+      {showChallengeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-card border border-orange-500/30 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-orange-500/15 flex items-center justify-center">
+                <ShieldAlert className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-foreground">Activate Production API</h3>
+                <p className="text-xs text-orange-400">Real fares · API usage charges apply</p>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">
+              Enter your challenge passphrase to switch to the live Amadeus production environment.
+            </p>
+            <Input
+              type="password"
+              value={challengeInput}
+              onChange={(e) => setChallengeInput(e.target.value)}
+              placeholder="Challenge passphrase"
+              className="bg-secondary border-border text-foreground mb-4"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && challengeInput) {
+                  switchEnv.mutate({ env: "production", challenge: challengeInput });
+                }
+              }}
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1 text-sm"
+                onClick={() => { setShowChallengeModal(false); setChallengeInput(""); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 text-sm font-semibold"
+                onClick={() => switchEnv.mutate({ env: "production", challenge: challengeInput })}
+                disabled={switchEnv.isPending || !challengeInput}
+                style={{ background: "linear-gradient(135deg, oklch(0.65 0.20 35), oklch(0.72 0.18 50))" }}
+              >
+                {switchEnv.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Activate
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

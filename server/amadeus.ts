@@ -1,28 +1,58 @@
 /**
  * Amadeus API client
  * Handles OAuth token acquisition and flight offer searches.
- * Extracts: price, seats available, full segment details, cabin class.
+ * Credentials are read from appSettings (DB) first, falling back to env vars.
+ * Both test and production credential sets are supported.
  */
 
-// Use test endpoint by default; set AMADEUS_ENV=production to switch to live fares
-const AMADEUS_BASE =
-  process.env.AMADEUS_ENV === "production"
+import { getSetting } from "./db";
+
+// ─── Active config resolution ─────────────────────────────────────────────────
+
+export async function getAmadeusActiveEnv(): Promise<"test" | "production"> {
+  const dbEnv = await getSetting("amadeus.activeEnv");
+  if (dbEnv === "test" || dbEnv === "production") return dbEnv;
+  return process.env.AMADEUS_ENV === "production" ? "production" : "test";
+}
+
+async function resolveCredentials(): Promise<{ baseUrl: string; clientId: string; clientSecret: string; env: string }> {
+  const env = await getAmadeusActiveEnv();
+  const isProd = env === "production";
+
+  const [dbId, dbSecret] = await Promise.all([
+    getSetting(isProd ? "amadeus.prod.clientId" : "amadeus.test.clientId"),
+    getSetting(isProd ? "amadeus.prod.clientSecret" : "amadeus.test.clientSecret"),
+  ]);
+
+  const clientId     = dbId     || process.env.AMADEUS_CLIENT_ID     || "";
+  const clientSecret = dbSecret || process.env.AMADEUS_CLIENT_SECRET || "";
+
+  const baseUrl = isProd
     ? "https://api.amadeus.com"
     : "https://test.api.amadeus.com";
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
+  return { baseUrl, clientId, clientSecret, env };
+}
+
+// ─── Token cache ──────────────────────────────────────────────────────────────
+
+let cachedToken: { token: string; expiresAt: number; configKey: string } | null = null;
+
+export function invalidateAmadeusToken(): void {
+  cachedToken = null;
+}
 
 export async function getAmadeusToken(): Promise<string> {
+  const { baseUrl, clientId, clientSecret, env } = await resolveCredentials();
+  const configKey = `${env}:${clientId}`;
   const now = Date.now();
-  if (cachedToken && cachedToken.expiresAt > now + 60_000) {
+
+  if (cachedToken && cachedToken.expiresAt > now + 60_000 && cachedToken.configKey === configKey) {
     return cachedToken.token;
   }
 
-  const clientId = process.env.AMADEUS_CLIENT_ID;
-  const clientSecret = process.env.AMADEUS_CLIENT_SECRET;
-
   if (!clientId || !clientSecret) {
-    throw new Error("AMADEUS_CLIENT_ID or AMADEUS_CLIENT_SECRET is not configured");
+    throw new Error(`Amadeus ${env} credentials are not configured`);
   }
 
   const body = new URLSearchParams({
@@ -31,7 +61,7 @@ export async function getAmadeusToken(): Promise<string> {
     client_secret: clientSecret,
   });
 
-  const res = await fetch(`${AMADEUS_BASE}/v1/security/oauth2/token`, {
+  const res = await fetch(`${baseUrl}/v1/security/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -43,10 +73,7 @@ export async function getAmadeusToken(): Promise<string> {
   }
 
   const data = await res.json() as { access_token: string; expires_in: number };
-  cachedToken = {
-    token: data.access_token,
-    expiresAt: now + data.expires_in * 1000,
-  };
+  cachedToken = { token: data.access_token, expiresAt: now + data.expires_in * 1000, configKey };
   return cachedToken.token;
 }
 
@@ -128,7 +155,7 @@ export async function searchFlights(params: {
   adults?: number;
   max?: number;
 }): Promise<FlightOffer[]> {
-  const token = await getAmadeusToken();
+  const [token, { baseUrl }] = await Promise.all([getAmadeusToken(), resolveCredentials()]);
 
   const query = new URLSearchParams({
     originLocationCode: params.origin,
@@ -141,7 +168,7 @@ export async function searchFlights(params: {
   });
 
   const res = await fetch(
-    `${AMADEUS_BASE}/v2/shopping/flight-offers?${query.toString()}`,
+    `${baseUrl}/v2/shopping/flight-offers?${query.toString()}`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -210,6 +237,44 @@ export async function checkAmadeusConnection(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ─── Config summary (for Settings UI) ────────────────────────────────────────
+
+function maskSecret(s: string | null): string | null {
+  if (!s) return null;
+  if (s.length <= 8) return "••••••••";
+  return s.slice(0, 4) + "••••••••" + s.slice(-4);
+}
+
+export async function getAmadeusConfigSummary() {
+  const [activeEnv, testId, testSecret, prodId, prodSecret, challenge] = await Promise.all([
+    getSetting("amadeus.activeEnv"),
+    getSetting("amadeus.test.clientId"),
+    getSetting("amadeus.test.clientSecret"),
+    getSetting("amadeus.prod.clientId"),
+    getSetting("amadeus.prod.clientSecret"),
+    getSetting("amadeus.challenge"),
+  ]);
+
+  const resolvedEnv = activeEnv === "production" ? "production" : "test";
+
+  return {
+    activeEnv: resolvedEnv as "test" | "production",
+    challengeSet: !!challenge,
+    test: {
+      clientId: testId ?? process.env.AMADEUS_CLIENT_ID ?? null,
+      clientSecretMasked: maskSecret(testSecret) ?? (process.env.AMADEUS_CLIENT_SECRET ? "from env ••••••••" : null),
+      configured: !!(testId || process.env.AMADEUS_CLIENT_ID),
+      fromEnv: !testId && !!process.env.AMADEUS_CLIENT_ID,
+    },
+    production: {
+      clientId: prodId ?? null,
+      clientSecretMasked: maskSecret(prodSecret),
+      configured: !!prodId,
+      fromEnv: false,
+    },
+  };
 }
 
 // ─── Amadeus response types ───────────────────────────────────────────────────
