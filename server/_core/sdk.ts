@@ -240,6 +240,7 @@ class SDKServer {
           email: session.email ?? null,
           loginMethod: "local",
           role: "admin",
+          passwordHash: null,
           createdAt: signedInAt,
           updatedAt: signedInAt,
           lastSignedIn: signedInAt,

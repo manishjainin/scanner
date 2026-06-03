@@ -2,6 +2,26 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, users, destinations, appSettings, InsertDestination } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import { scryptSync, randomBytes, timingSafeEqual } from "crypto";
+
+// ─── Password helpers ─────────────────────────────────────────────────────────
+export function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString("hex");
+  const buf = scryptSync(password, salt, 64);
+  return `scrypt:${salt}:${buf.toString("hex")}`;
+}
+
+export function verifyPassword(password: string, stored: string): boolean {
+  try {
+    const [algo, salt, hash] = stored.split(":");
+    if (algo !== "scrypt" || !salt || !hash) return false;
+    const storedBuf = Buffer.from(hash, "hex");
+    const inputBuf = scryptSync(password, salt, 64);
+    return timingSafeEqual(storedBuf, inputBuf);
+  } catch {
+    return false;
+  }
+}
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -86,10 +106,17 @@ export async function getUserByOpenId(openId: string) {
     console.warn("[Database] Cannot get user: database not available");
     return undefined;
   }
-
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
   return result.length > 0 ? result[0] : undefined;
+}
+
+export async function updateUser(
+  openId: string,
+  data: { name?: string; passwordHash?: string },
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.update(users).set(data).where(eq(users.openId, openId));
 }
 
 // ─── Destinations ─────────────────────────────────────────────────────────────

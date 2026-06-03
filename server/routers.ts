@@ -11,9 +11,12 @@ import {
   updateDestination,
   deleteDestination,
   getUserByOpenId,
+  updateUser,
   getSetting,
   setSetting,
   upsertUser,
+  hashPassword,
+  verifyPassword,
 } from "./db";
 import {
   runScan,
@@ -53,22 +56,29 @@ export const appRouter = router({
         const configuredPassword = process.env.LOCAL_LOGIN_PASSWORD ?? "";
         const email = input.email.trim().toLowerCase();
 
-        if (!configuredEmail || !configuredPassword) {
+        if (!configuredEmail) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: "Local login is not configured",
           });
         }
 
-        if (email !== configuredEmail || input.password !== configuredPassword) {
-          throw new TRPCError({
-            code: "UNAUTHORIZED",
-            message: "Invalid email or password",
-          });
+        if (email !== configuredEmail) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
         }
 
+        // Check DB-stored password hash first; fall back to env var
         const openId = `local:${email}`;
-        const name = email.split("@")[0] || "Local Admin";
+        const existingUser = await getUserByOpenId(openId);
+        const passwordOk = existingUser?.passwordHash
+          ? verifyPassword(input.password, existingUser.passwordHash)
+          : input.password === configuredPassword;
+
+        if (!passwordOk) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid email or password" });
+        }
+
+        const name = existingUser?.name ?? email.split("@")[0] ?? "Local Admin";
 
         await upsertUser({
           openId,
@@ -101,6 +111,7 @@ export const appRouter = router({
             email,
             loginMethod: "local",
             role: "admin" as const,
+            passwordHash: null,
             createdAt: new Date(),
             updatedAt: new Date(),
             lastSignedIn: new Date(),
@@ -112,6 +123,37 @@ export const appRouter = router({
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return { success: true } as const;
     }),
+
+    updateProfile: protectedProcedure
+      .input(z.object({
+        name: z.string().min(1).max(100).optional(),
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(8).max(128).optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const openId = ctx.user.openId;
+        const configuredPassword = process.env.LOCAL_LOGIN_PASSWORD ?? "";
+
+        // Verify current password (DB hash first, then env var)
+        const dbUser = await getUserByOpenId(openId);
+        const passwordOk = dbUser?.passwordHash
+          ? verifyPassword(input.currentPassword, dbUser.passwordHash)
+          : input.currentPassword === configuredPassword;
+
+        if (!passwordOk) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Current password is incorrect" });
+        }
+
+        const updates: { name?: string; passwordHash?: string } = {};
+        if (input.name !== undefined) updates.name = input.name.trim();
+        if (input.newPassword) updates.passwordHash = hashPassword(input.newPassword);
+
+        if (Object.keys(updates).length > 0) {
+          await updateUser(openId, updates);
+        }
+
+        return { success: true };
+      }),
   }),
 
   destinations: router({
