@@ -2,7 +2,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { DealRatingBadge } from "./DealRatingBadge";
 import { googleFlightsUrl } from "@/lib/flightLinks";
 import {
-  Plane, Calendar, Clock, MapPin, Armchair, ExternalLink,
+  Plane, Calendar, Clock, MapPin, Armchair, ExternalLink, CalendarDays, Sun,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 
@@ -51,6 +51,8 @@ interface DealDetailDrawerProps {
     lowestIn7Days: number | null;
     lowestIn30Days: number | null;
     lowestIn90Days: number | null;
+    holidayLabel: string | null;
+    inBestSeason: boolean;
     scannedAt: Date;
   };
 }
@@ -248,6 +250,24 @@ export function DealDetailDrawer({ open, onClose, destination, scan, origin = "S
               Search on Google Flights
             </a>
           </div>
+
+          {/* Holiday window context */}
+          {(scan.holidayLabel || scan.inBestSeason) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {scan.holidayLabel && (
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-secondary text-foreground font-medium">
+                  <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
+                  {scan.holidayLabel}
+                </span>
+              )}
+              {scan.inBestSeason && (
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 font-medium">
+                  <Sun className="w-3.5 h-3.5" />
+                  Ideal season to visit
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Trip summary */}
           <div className="grid grid-cols-2 gap-3">

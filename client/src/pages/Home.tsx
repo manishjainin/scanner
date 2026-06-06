@@ -54,6 +54,9 @@ type DealRow = {
     lowestIn7Days: string | number | null;
     lowestIn30Days: string | number | null;
     lowestIn90Days: string | number | null;
+    holidayLabel: string | null;
+    holidayState: string | null;
+    inBestSeason: boolean;
   };
   destination: {
     id: number;
@@ -366,6 +369,8 @@ export default function Home() {
               lowestIn7Days={row.scan.lowestIn7Days !== null ? parseFloat(String(row.scan.lowestIn7Days)) : null}
               lowestIn30Days={row.scan.lowestIn30Days !== null ? parseFloat(String(row.scan.lowestIn30Days)) : null}
               lowestIn90Days={row.scan.lowestIn90Days !== null ? parseFloat(String(row.scan.lowestIn90Days)) : null}
+              holidayLabel={row.scan.holidayLabel}
+              inBestSeason={row.scan.inBestSeason}
               seatsAvailable={row.scan.seatsAvailable}
               animationDelay={i * 35}
               onClick={() => setSelectedDeal(row)}
@@ -414,6 +419,8 @@ export default function Home() {
             lowestIn7Days: selectedDeal.scan.lowestIn7Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn7Days)) : null,
             lowestIn30Days: selectedDeal.scan.lowestIn30Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn30Days)) : null,
             lowestIn90Days: selectedDeal.scan.lowestIn90Days !== null ? parseFloat(String(selectedDeal.scan.lowestIn90Days)) : null,
+            holidayLabel: selectedDeal.scan.holidayLabel,
+            inBestSeason: selectedDeal.scan.inBestSeason,
             scannedAt: new Date(selectedDeal.scan.scannedAt),
           }}
         />

@@ -42,6 +42,44 @@ const MIGRATIONS: { name: string; ddl: string }[] = [
     name: "users.passwordHash",
     ddl: "ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(255)",
   },
+
+  // ── destinations: best season ─────────────────────────────────────────────────
+  {
+    name: "destinations.bestMonths",
+    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS bestMonths JSON",
+  },
+  {
+    name: "destinations.bestMonthsSource",
+    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS bestMonthsSource ENUM('ai','manual') NOT NULL DEFAULT 'ai'",
+  },
+
+  // ── flightScans: holiday context ───────────────────────────────────────────────
+  {
+    name: "flightScans.holidayLabel",
+    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS holidayLabel VARCHAR(100)",
+  },
+  {
+    name: "flightScans.holidayState",
+    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS holidayState VARCHAR(3)",
+  },
+  {
+    name: "flightScans.inBestSeason",
+    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS inBestSeason BOOLEAN NOT NULL DEFAULT FALSE",
+  },
+
+  // ── termHolidays table ─────────────────────────────────────────────────────────
+  {
+    name: "termHolidays table",
+    ddl: `CREATE TABLE IF NOT EXISTS termHolidays (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      state VARCHAR(3) NOT NULL,
+      label VARCHAR(100) NOT NULL,
+      startDate VARCHAR(10) NOT NULL,
+      endDate VARCHAR(10) NOT NULL,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`,
+  },
 ];
 
 export async function runMigrations(): Promise<void> {

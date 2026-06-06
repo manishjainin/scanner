@@ -8,6 +8,7 @@ import {
   XCircle, Loader2, Plus, Pencil, Trash2,
   Settings as SettingsIcon, Wifi, WifiOff, Save, X, Bell, PlaneTakeoff,
   ShieldAlert, Eye, EyeOff, FlaskConical, Rocket, RefreshCw, CheckCircle2,
+  Sparkles, CalendarDays,
 } from "lucide-react";
 import { LocalLoginForm } from "@/components/LocalLoginForm";
 
@@ -19,6 +20,7 @@ interface DestinationFormData {
   region: string;
   bookingWindowDays: number;
   defaultTripDays: number;
+  bestMonths: number[];
   isActive: boolean;
 }
 
@@ -30,11 +32,13 @@ const EMPTY_FORM: DestinationFormData = {
   region: "",
   bookingWindowDays: 120,
   defaultTripDays: 10,
+  bestMonths: [],
   isActive: true,
 };
 
 const REGIONS = ["SE Asia", "NE Asia", "Europe", "N America", "Pacific", "Middle East", "Mexico", "South Asia", "Africa", "Other"];
 const CONTINENTS = ["Asia", "Pacific", "Middle East", "Europe", "Americas", "Africa"];
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default function Settings() {
   const { user, isAuthenticated } = useAuth();
@@ -44,10 +48,12 @@ export default function Settings() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [formData, setFormData] = useState<DestinationFormData>(EMPTY_FORM);
 
-  // Notification prefs local state
+  // Notification + scan prefs local state
   const [notifThreshold, setNotifThreshold] = useState(-15);
   const [notifEnabled, setNotifEnabled] = useState(true);
   const [originsValue, setOriginsValue] = useState("SYD");
+  const [maxSearches, setMaxSearches] = useState(80);
+  const [maxWindows, setMaxWindows] = useState(2);
 
   const { data: destinations, refetch: refetchDestinations } = trpc.destinations.list.useQuery();
   const { data: connections, isLoading: connLoading, refetch: refetchConnections } = trpc.settings.checkConnections.useQuery(
@@ -64,8 +70,15 @@ export default function Settings() {
       setNotifThreshold(notifPrefs.hotDealThreshold);
       setNotifEnabled(notifPrefs.enabled);
       setOriginsValue(notifPrefs.origins);
+      setMaxSearches(notifPrefs.maxSearchesPerRun);
+      setMaxWindows(notifPrefs.maxWindowsPerRoute);
     }
   }, [notifPrefs]);
+
+  const refreshSeasons = trpc.destinations.refreshSeasons.useMutation({
+    onSuccess: (r) => { toast.success(`Refreshed best seasons for ${r.updated} destinations`); refetchDestinations(); },
+    onError: (e) => toast.error(e.message),
+  });
 
   const saveNotifPrefs = trpc.settings.saveNotificationPrefs.useMutation({
     onSuccess: () => { toast.success("Settings saved"); refetchNotifPrefs(); },
@@ -123,8 +136,18 @@ export default function Settings() {
       region: dest.region,
       bookingWindowDays: dest.bookingWindowDays,
       defaultTripDays: dest.defaultTripDays,
+      bestMonths: dest.bestMonths ?? [],
       isActive: dest.isActive,
     });
+  };
+
+  const toggleMonth = (m: number) => {
+    setFormData((p) => ({
+      ...p,
+      bestMonths: p.bestMonths.includes(m)
+        ? p.bestMonths.filter((x) => x !== m)
+        : [...p.bestMonths, m].sort((a, b) => a - b),
+    }));
   };
 
   const handleSave = () => {
@@ -193,6 +216,38 @@ export default function Settings() {
             </div>
           </div>
 
+          {/* Scan volume controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1">Max searches per scan</label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Caps Amadeus API calls. Highest-priority (in-season, soonest) routes are scanned first.
+              </p>
+              <Input
+                type="number"
+                min={1}
+                max={1000}
+                value={maxSearches}
+                onChange={(e) => setMaxSearches(parseInt(e.target.value) || 80)}
+                className="bg-secondary border-border text-foreground text-sm max-w-32"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1">Max windows per route</label>
+              <p className="text-xs text-muted-foreground mb-2">
+                Extra in-season holiday windows shown per route (e.g. April + September breaks).
+              </p>
+              <Input
+                type="number"
+                min={1}
+                max={6}
+                value={maxWindows}
+                onChange={(e) => setMaxWindows(parseInt(e.target.value) || 2)}
+                className="bg-secondary border-border text-foreground text-sm max-w-32"
+              />
+            </div>
+          </div>
+
           {/* Notifications enabled toggle */}
           <div className="flex items-center gap-3">
             <input
@@ -212,6 +267,8 @@ export default function Settings() {
               hotDealThreshold: notifThreshold,
               enabled: notifEnabled,
               origins: originsValue || "SYD",
+              maxSearchesPerRun: maxSearches,
+              maxWindowsPerRoute: maxWindows,
             })}
             disabled={saveNotifPrefs.isPending}
             size="sm"
@@ -257,15 +314,27 @@ export default function Settings() {
               {destinations?.filter((d) => d.isActive).length ?? 0} active · {destinations?.length ?? 0} total
             </p>
           </div>
-          <Button
-            onClick={() => { setShowAddForm(true); setEditingId(null); setFormData(EMPTY_FORM); }}
-            size="sm"
-            className="flex items-center gap-1.5 text-xs font-semibold"
-            style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Destination
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => refreshSeasons.mutate()}
+              disabled={refreshSeasons.isPending}
+              size="sm"
+              variant="outline"
+              className="flex items-center gap-1.5 text-xs"
+            >
+              {refreshSeasons.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              Refresh Seasons (AI)
+            </Button>
+            <Button
+              onClick={() => { setShowAddForm(true); setEditingId(null); setFormData(EMPTY_FORM); }}
+              size="sm"
+              className="flex items-center gap-1.5 text-xs font-semibold"
+              style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Destination
+            </Button>
+          </div>
         </div>
 
         {/* Add/Edit form */}
@@ -353,6 +422,34 @@ export default function Settings() {
                 </div>
               </FormField>
             </div>
+
+            {/* Best months to visit */}
+            <div className="mb-4">
+              <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+                Best Months to Visit
+                <span className="text-xs text-muted-foreground/60 ml-1">(used to prioritise holiday windows · AI-filled, click to override)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {MONTH_ABBR.map((m, i) => {
+                  const month = i + 1;
+                  const active = formData.bestMonths.includes(month);
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => toggleMonth(month)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                        active ? "text-black" : "bg-secondary text-muted-foreground hover:text-foreground"
+                      }`}
+                      style={active ? { background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))" } : {}}
+                    >
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="flex items-center gap-2">
               <Button
                 onClick={handleSave}
@@ -384,7 +481,7 @@ export default function Settings() {
               <tr className="border-b border-border">
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Destination</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground hidden sm:table-cell">Region</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground hidden md:table-cell">Booking Window</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground hidden lg:table-cell">Best Season</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground hidden md:table-cell">Trip Days</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Status</th>
                 <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>
@@ -403,7 +500,16 @@ export default function Settings() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{dest.region}</td>
-                  <td className="px-4 py-3 text-muted-foreground hidden md:table-cell">{dest.bookingWindowDays} days</td>
+                  <td className="px-4 py-3 hidden lg:table-cell">
+                    {dest.bestMonths && dest.bestMonths.length > 0 ? (
+                      <span className="text-xs text-muted-foreground">
+                        {dest.bestMonths.map((m) => MONTH_ABBR[m - 1]).join(", ")}
+                        {dest.bestMonthsSource === "manual" && <span className="ml-1 text-primary">✎</span>}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground/50">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-muted-foreground hidden md:table-cell">{dest.defaultTripDays} days</td>
                   <td className="px-4 py-3">
                     <button
@@ -441,7 +547,152 @@ export default function Settings() {
           </table>
         </div>
       </section>
+
+      {/* Term Holidays */}
+      <TermHolidaysSection />
     </div>
+  );
+}
+
+// ─── Term Holidays management ─────────────────────────────────────────────────
+
+interface HolidayFormData { state: string; label: string; startDate: string; endDate: string; }
+const EMPTY_HOLIDAY: HolidayFormData = { state: "NSW", label: "", startDate: "", endDate: "" };
+
+function TermHolidaysSection() {
+  const { data: holidays, refetch } = trpc.termHolidays.list.useQuery();
+  const { data: states } = trpc.termHolidays.states.useQuery();
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState<HolidayFormData>(EMPTY_HOLIDAY);
+
+  const create = trpc.termHolidays.create.useMutation({
+    onSuccess: () => { toast.success("Holiday added"); setShowForm(false); setForm(EMPTY_HOLIDAY); refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const update = trpc.termHolidays.update.useMutation({
+    onSuccess: () => { toast.success("Holiday updated"); setEditingId(null); refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const del = trpc.termHolidays.delete.useMutation({
+    onSuccess: () => { toast.success("Holiday removed"); refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const startEdit = (h: NonNullable<typeof holidays>[0]) => {
+    setEditingId(h.id);
+    setShowForm(true);
+    setForm({ state: h.state, label: h.label, startDate: h.startDate, endDate: h.endDate });
+  };
+  const save = () => {
+    if (editingId !== null) update.mutate({ id: editingId, ...form });
+    else create.mutate(form);
+  };
+
+  const stateList = states ?? [{ code: "NSW", name: "NSW" }];
+
+  return (
+    <section className="mt-8">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-muted-foreground" />
+          <div>
+            <h2 className="text-base font-semibold text-foreground">Term Holidays</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">School-term holiday windows by state — used to target departure dates</p>
+          </div>
+        </div>
+        <Button
+          onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_HOLIDAY); }}
+          size="sm"
+          className="flex items-center gap-1.5 text-xs font-semibold"
+          style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)" }}
+        >
+          <Plus className="w-3.5 h-3.5" /> Add
+        </Button>
+      </div>
+
+      <div className="mb-4 flex items-start gap-2 px-4 py-3 rounded-xl border border-orange-500/20 bg-orange-500/5 text-xs text-orange-400">
+        <ShieldAlert className="w-4 h-4 flex-shrink-0 mt-0.5" />
+        <span>Seeded dates are best-effort approximations. Verify against official state education department calendars and correct as needed.</span>
+      </div>
+
+      {showForm && (
+        <div className="bg-card border border-border rounded-xl p-5 mb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <FormField label="State">
+            <select
+              value={form.state}
+              onChange={(e) => setForm((p) => ({ ...p, state: e.target.value }))}
+              className="w-full h-9 rounded-md border border-border bg-secondary text-foreground text-sm px-3"
+            >
+              {stateList.map((s) => <option key={s.code} value={s.code}>{s.code}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Label">
+            <Input value={form.label} onChange={(e) => setForm((p) => ({ ...p, label: e.target.value }))} placeholder="Term 2 Holidays 2026" className="bg-secondary border-border text-sm" />
+          </FormField>
+          <FormField label="Start date">
+            <Input type="date" value={form.startDate} onChange={(e) => setForm((p) => ({ ...p, startDate: e.target.value }))} className="bg-secondary border-border text-sm" />
+          </FormField>
+          <FormField label="End date">
+            <Input type="date" value={form.endDate} onChange={(e) => setForm((p) => ({ ...p, endDate: e.target.value }))} className="bg-secondary border-border text-sm" />
+          </FormField>
+          <div className="col-span-2 sm:col-span-4 flex items-center gap-2">
+            <Button
+              onClick={save}
+              disabled={create.isPending || update.isPending || !form.label || !form.startDate || !form.endDate}
+              size="sm"
+              className="text-xs"
+              style={{ background: "linear-gradient(135deg, oklch(0.78 0.15 75), oklch(0.65 0.18 60))", color: "oklch(0.10 0.01 260)", fontWeight: 600 }}
+            >
+              <Save className="w-3.5 h-3.5 mr-1" /> Save
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => { setShowForm(false); setEditingId(null); }} className="text-xs text-muted-foreground">
+              <X className="w-3.5 h-3.5 mr-1" /> Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">State</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Holiday</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">Dates</th>
+              <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(!holidays || holidays.length === 0) && (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">No holiday windows yet.</td></tr>
+            )}
+            {holidays?.map((h, i) => (
+              <tr key={h.id} className={`border-b border-border last:border-0 ${i % 2 === 0 ? "" : "bg-secondary/30"}`}>
+                <td className="px-4 py-3">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-foreground font-medium">{h.state}</span>
+                </td>
+                <td className="px-4 py-3 text-foreground">{h.label}</td>
+                <td className="px-4 py-3 text-muted-foreground text-xs">{h.startDate} → {h.endDate}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => startEdit(h)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => { if (confirm(`Remove "${h.label}" (${h.state})?`)) del.mutate({ id: h.id }); }}
+                      className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

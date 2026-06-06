@@ -32,6 +32,14 @@ import {
   getAmadeusConfigSummary,
   invalidateAmadeusToken,
 } from "./amadeus";
+import {
+  getAllTermHolidays,
+  createTermHoliday,
+  updateTermHoliday,
+  deleteTermHoliday,
+  STATE_NAMES,
+} from "./holidays";
+import { refreshBestSeasons } from "./seasons";
 import { sdk } from "./_core/sdk";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -176,10 +184,16 @@ export const appRouter = router({
         region: z.string().min(1).max(50),
         bookingWindowDays: z.number().int().min(7).max(365),
         defaultTripDays: z.number().int().min(1).max(60),
+        bestMonths: z.array(z.number().int().min(1).max(12)).optional(),
         isActive: z.boolean().optional().default(true),
       }))
       .mutation(async ({ input }) => {
-        const id = await createDestination({ ...input, iataCode: input.iataCode.toUpperCase() });
+        const { bestMonths, ...rest } = input;
+        const id = await createDestination({
+          ...rest,
+          iataCode: input.iataCode.toUpperCase(),
+          ...(bestMonths ? { bestMonths, bestMonthsSource: "manual" as const } : {}),
+        });
         return { id };
       }),
 
@@ -193,18 +207,69 @@ export const appRouter = router({
         region: z.string().min(1).max(50).optional(),
         bookingWindowDays: z.number().int().min(7).max(365).optional(),
         defaultTripDays: z.number().int().min(1).max(60).optional(),
+        bestMonths: z.array(z.number().int().min(1).max(12)).optional(),
         isActive: z.boolean().optional(),
       }))
       .mutation(async ({ input }) => {
+        const { id, bestMonths, ...data } = input;
+        await updateDestination(id, {
+          ...data,
+          // Editing months marks them as a manual override (won't be AI-overwritten)
+          ...(bestMonths !== undefined ? { bestMonths, bestMonthsSource: "manual" as const } : {}),
+        });
+        return { success: true };
+      }),
+
+    refreshSeasons: adminProcedure.mutation(async () => {
+      const { updated } = await refreshBestSeasons(true);
+      return { success: true, updated };
+    }),
+
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await deleteDestination(input.id);
+        return { success: true };
+      }),
+  }),
+
+  termHolidays: router({
+    list: publicProcedure.query(async () => getAllTermHolidays()),
+
+    states: publicProcedure.query(() =>
+      Object.entries(STATE_NAMES).map(([code, name]) => ({ code, name })),
+    ),
+
+    create: adminProcedure
+      .input(z.object({
+        state: z.string().min(2).max(3),
+        label: z.string().min(1).max(100),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      }))
+      .mutation(async ({ input }) => {
+        const id = await createTermHoliday(input);
+        return { id };
+      }),
+
+    update: adminProcedure
+      .input(z.object({
+        id: z.number(),
+        state: z.string().min(2).max(3).optional(),
+        label: z.string().min(1).max(100).optional(),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      }))
+      .mutation(async ({ input }) => {
         const { id, ...data } = input;
-        await updateDestination(id, data);
+        await updateTermHoliday(id, data);
         return { success: true };
       }),
 
     delete: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
-        await deleteDestination(input.id);
+        await deleteTermHoliday(input.id);
         return { success: true };
       }),
   }),
@@ -261,15 +326,19 @@ export const appRouter = router({
       }),
 
     notificationPrefs: adminProcedure.query(async () => {
-      const [threshold, enabled, origins] = await Promise.all([
+      const [threshold, enabled, origins, maxSearches, maxWindows] = await Promise.all([
         getSetting("notification.hotDealThreshold"),
         getSetting("notification.enabled"),
         getSetting("scan.origins"),
+        getSetting("scan.maxSearchesPerRun"),
+        getSetting("scan.maxWindowsPerRoute"),
       ]);
       return {
         hotDealThreshold: threshold ? parseFloat(threshold) : -15,
         enabled: enabled !== "false",
         origins: origins ?? "SYD",
+        maxSearchesPerRun: maxSearches ? parseInt(maxSearches, 10) : 80,
+        maxWindowsPerRoute: maxWindows ? parseInt(maxWindows, 10) : 2,
       };
     }),
 
@@ -278,12 +347,16 @@ export const appRouter = router({
         hotDealThreshold: z.number().min(-50).max(-1),
         enabled: z.boolean(),
         origins: z.string().min(3),
+        maxSearchesPerRun: z.number().int().min(1).max(1000),
+        maxWindowsPerRoute: z.number().int().min(1).max(6),
       }))
       .mutation(async ({ input }) => {
         await Promise.all([
           setSetting("notification.hotDealThreshold", String(input.hotDealThreshold)),
           setSetting("notification.enabled", String(input.enabled)),
           setSetting("scan.origins", input.origins.toUpperCase()),
+          setSetting("scan.maxSearchesPerRun", String(input.maxSearchesPerRun)),
+          setSetting("scan.maxWindowsPerRoute", String(input.maxWindowsPerRoute)),
         ]);
         return { success: true };
       }),

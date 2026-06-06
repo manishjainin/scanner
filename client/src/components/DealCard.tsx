@@ -1,4 +1,4 @@
-import { Plane, Clock, ArrowRight, TrendingDown, TrendingUp, Minus, Armchair, ExternalLink } from "lucide-react";
+import { Plane, Clock, ArrowRight, TrendingDown, TrendingUp, Minus, Armchair, ExternalLink, CalendarDays, Sun } from "lucide-react";
 import { DealRatingBadge } from "./DealRatingBadge";
 import { googleFlightsUrl } from "@/lib/flightLinks";
 import { format, parseISO } from "date-fns";
@@ -25,6 +25,8 @@ interface DealCardProps {
   lowestIn7Days?: number | null;
   lowestIn30Days?: number | null;
   lowestIn90Days?: number | null;
+  holidayLabel?: string | null;
+  inBestSeason?: boolean;
   seatsAvailable: number | null;
   animationDelay?: number;
   onClick?: () => void;
@@ -42,6 +44,7 @@ export function DealCard({
   departureDate, returnDate, outboundDuration,
   dealRating, aiSummary, percentVsAvg,
   lowestIn7Days, lowestIn30Days, lowestIn90Days,
+  holidayLabel, inBestSeason,
   seatsAvailable, animationDelay = 0, onClick,
 }: DealCardProps) {
   const emoji = REGION_EMOJI[region] ?? "✈️";
@@ -98,6 +101,24 @@ export function DealCard({
         </div>
         <DealRatingBadge rating={dealRating} />
       </div>
+
+      {/* Holiday window + season */}
+      {(holidayLabel || inBestSeason) && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-3 -mt-1">
+          {holidayLabel && (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
+              <CalendarDays className="w-3 h-3" />
+              {holidayLabel}
+            </span>
+          )}
+          {inBestSeason && (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">
+              <Sun className="w-3 h-3" />
+              Best season
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Price */}
       <div className="mb-4">

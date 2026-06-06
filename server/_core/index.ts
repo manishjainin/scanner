@@ -11,6 +11,7 @@ import { serveStatic, setupVite } from "./vite";
 import { sdk } from "./sdk";
 import { runScan, seedDestinations } from "../scanner";
 import { runMigrations } from "../migrate";
+import { seedTermHolidays } from "../holidays";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -90,8 +91,9 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
-    // Seed default destinations if not already present
+    // Seed default destinations + term holiday calendar if not already present
     seedDestinations().catch((err) => console.error("[Seed] Failed:", err));
+    seedTermHolidays().catch((err) => console.error("[Seed] Holidays failed:", err));
   });
 }
 

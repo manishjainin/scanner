@@ -37,6 +37,9 @@ export const destinations = mysqlTable("destinations", {
   region: varchar("region", { length: 50 }).notNull(),
   bookingWindowDays: int("bookingWindowDays").notNull().default(120),
   defaultTripDays: int("defaultTripDays").notNull().default(10),
+  // Ideal months to visit (1-12). AI-generated, admin-editable.
+  bestMonths: json("bestMonths").$type<number[]>(),
+  bestMonthsSource: mysqlEnum("bestMonthsSource", ["ai", "manual"]).notNull().default("ai"),
   isActive: boolean("isActive").notNull().default(true),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -44,6 +47,20 @@ export const destinations = mysqlTable("destinations", {
 
 export type Destination = typeof destinations.$inferSelect;
 export type InsertDestination = typeof destinations.$inferInsert;
+
+// ─── Term Holidays (Australian school holidays by state) ───────────────────────
+export const termHolidays = mysqlTable("termHolidays", {
+  id: int("id").autoincrement().primaryKey(),
+  state: varchar("state", { length: 3 }).notNull(),   // NSW, VIC, QLD, WA, SA, ACT, TAS, NT
+  label: varchar("label", { length: 100 }).notNull(), // e.g. "Term 2 Holidays 2026"
+  startDate: varchar("startDate", { length: 10 }).notNull(), // YYYY-MM-DD
+  endDate: varchar("endDate", { length: 10 }).notNull(),     // YYYY-MM-DD
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type TermHoliday = typeof termHolidays.$inferSelect;
+export type InsertTermHoliday = typeof termHolidays.$inferInsert;
 
 // ─── Scan Runs ────────────────────────────────────────────────────────────────
 export const scanRuns = mysqlTable("scanRuns", {
@@ -89,6 +106,10 @@ export const flightScans = mysqlTable("flightScans", {
   lowestIn7Days: decimal("lowestIn7Days", { precision: 10, scale: 2 }),
   lowestIn30Days: decimal("lowestIn30Days", { precision: 10, scale: 2 }),
   lowestIn90Days: decimal("lowestIn90Days", { precision: 10, scale: 2 }),
+  // Holiday-window context for this scan
+  holidayLabel: varchar("holidayLabel", { length: 100 }),  // e.g. "NSW Term 2 Holidays 2026"
+  holidayState: varchar("holidayState", { length: 3 }),
+  inBestSeason: boolean("inBestSeason").notNull().default(false),
   rawData: json("rawData"),
 });
 

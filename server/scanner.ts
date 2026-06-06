@@ -8,9 +8,11 @@
 
 import { and, avg, desc, eq, gte, asc, min } from "drizzle-orm";
 import { getDb, getSetting } from "./db";
-import { destinations, flightScans, scanRuns } from "../drizzle/schema";
+import { destinations, flightScans, scanRuns, type Destination } from "../drizzle/schema";
 import { searchFlights } from "./amadeus";
 import { notifyOwner } from "./_core/notification";
+import { stateForOrigin, getUpcomingHolidayWindows, seedTermHolidays } from "./holidays";
+import { refreshBestSeasons } from "./seasons";
 
 const DEFAULT_ORIGIN = "SYD";
 const HOT_DEAL_THRESHOLD = -15; // % below average (default, overridden by appSettings)
@@ -30,6 +32,117 @@ async function getHotDealThreshold(): Promise<number> {
 async function areNotificationsEnabled(): Promise<boolean> {
   const val = await getSetting("notification.enabled");
   return val !== "false";
+}
+
+async function getMaxSearchesPerRun(): Promise<number> {
+  const val = await getSetting("scan.maxSearchesPerRun");
+  const n = val ? parseInt(val, 10) : 80;
+  return Number.isFinite(n) && n > 0 ? n : 80;
+}
+
+async function getMaxWindowsPerRoute(): Promise<number> {
+  const val = await getSetting("scan.maxWindowsPerRoute");
+  const n = val ? parseInt(val, 10) : 2;
+  return Number.isFinite(n) && n >= 1 ? n : 2;
+}
+
+function monthOf(dateStr: string): number {
+  return parseInt(dateStr.slice(5, 7), 10);
+}
+
+function daysUntil(dateStr: string, from: Date): number {
+  return Math.round((new Date(dateStr).getTime() - from.getTime()) / 86_400_000);
+}
+
+// ─── Candidate (one origin → dest → holiday window search target) ──────────────
+interface ScanCandidate {
+  origin: string;
+  dest: Destination;
+  departureDate: string;
+  returnDate: string;
+  holidayLabel: string | null;
+  holidayState: string | null;
+  inBestSeason: boolean;
+  score: number; // higher = scanned first within the cap
+}
+
+/**
+ * Build the prioritised list of search candidates.
+ * - Each origin maps to a state → upcoming term-holiday windows.
+ * - Per route: always the single best window, plus any *additional in-season*
+ *   windows up to maxWindowsPerRoute (so e.g. Bali surfaces both Apr + Sep breaks).
+ * - Origins/states without holiday data fall back to legacy bookingWindowDays.
+ */
+async function buildCandidates(
+  origins: string[],
+  dests: Destination[],
+  maxWindowsPerRoute: number,
+): Promise<ScanCandidate[]> {
+  const now = new Date();
+  const today = todayStr();
+  const candidates: ScanCandidate[] = [];
+
+  // Cache holiday windows per state
+  const windowsByState = new Map<string, Awaited<ReturnType<typeof getUpcomingHolidayWindows>>>();
+
+  for (const origin of origins) {
+    const state = stateForOrigin(origin);
+    if (state && !windowsByState.has(state)) {
+      windowsByState.set(state, await getUpcomingHolidayWindows(state, now));
+    }
+    const windows = state ? windowsByState.get(state) ?? [] : [];
+
+    for (const dest of dests) {
+      if (dest.iataCode === origin) continue;
+      const stay = dest.defaultTripDays;
+      const best = dest.bestMonths ?? [];
+
+      if (windows.length === 0) {
+        // Fallback: no holiday calendar for this state — legacy booking-window search
+        const departureDate = addDays(today, dest.bookingWindowDays);
+        const inSeason = best.length > 0 && best.includes(monthOf(departureDate));
+        candidates.push({
+          origin, dest, departureDate,
+          returnDate: addDays(departureDate, stay),
+          holidayLabel: null, holidayState: state,
+          inBestSeason: inSeason,
+          score: (inSeason ? 1000 : 0) - dest.bookingWindowDays,
+        });
+        continue;
+      }
+
+      // Score each upcoming window for this destination
+      const scored = windows.map((w) => {
+        const inSeason = best.length > 0 && best.includes(monthOf(w.startDate));
+        return { w, inSeason, days: daysUntil(w.startDate, now) };
+      });
+      // Sort: in-season first, then soonest
+      scored.sort((a, b) => (Number(b.inSeason) - Number(a.inSeason)) || (a.days - b.days));
+
+      // Always take the top window; add further windows only if in-season
+      const chosen = [scored[0]!];
+      for (const s of scored.slice(1)) {
+        if (chosen.length >= maxWindowsPerRoute) break;
+        if (s.inSeason) chosen.push(s);
+      }
+
+      for (const c of chosen) {
+        candidates.push({
+          origin, dest,
+          departureDate: c.w.startDate,
+          returnDate: addDays(c.w.startDate, stay),
+          holidayLabel: state ? `${state} ${c.w.label}` : c.w.label,
+          holidayState: state,
+          inBestSeason: c.inSeason,
+          score: (c.inSeason ? 1000 : 0) - c.days,
+        });
+      }
+    }
+  }
+
+  // Prioritise: in-season first, then soonest departure
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates;
 }
 
 // ─── Seed default destinations ────────────────────────────────────────────────
@@ -258,6 +371,9 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
   if (!db) throw new Error("Database not available");
 
   await seedDestinations();
+  await seedTermHolidays();
+  // Fill in any missing best-season data (no-op for destinations already set)
+  await refreshBestSeasons(false).catch((e) => console.error("[Scanner] Season refresh failed:", e));
 
   const [scanRun] = await db
     .insert(scanRuns)
@@ -265,8 +381,7 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
     .$returningId();
 
   const scanRunId = scanRun!.id;
-  const today = todayStr();
-  const results: Array<{ destination: string; origin: string; success: boolean; price?: number; error?: string }> = [];
+  const results: Array<{ destination: string; origin: string; holiday?: string | null; success: boolean; price?: number; error?: string }> = [];
 
   const activeDestinations = await db
     .select()
@@ -274,109 +389,114 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
     .where(eq(destinations.isActive, true));
 
   const origins = await getConfiguredOrigins();
-  const hotDealThreshold = await getHotDealThreshold();
-  const notificationsEnabled = await areNotificationsEnabled();
+  const [hotDealThreshold, notificationsEnabled, maxSearches, maxWindowsPerRoute] = await Promise.all([
+    getHotDealThreshold(),
+    areNotificationsEnabled(),
+    getMaxSearchesPerRun(),
+    getMaxWindowsPerRoute(),
+  ]);
+
+  // Build prioritised candidate list, then cap to the per-run budget
+  const allCandidates = await buildCandidates(origins, activeDestinations, maxWindowsPerRoute);
+  const candidates = allCandidates.slice(0, maxSearches);
+  console.log(`[Scanner] ${allCandidates.length} candidates, scanning top ${candidates.length} (cap ${maxSearches})`);
+
   let successCount = 0;
 
-  for (const origin of origins) {
-    for (const dest of activeDestinations) {
-      if (dest.iataCode === origin) continue; // skip scanning origin to itself
+  for (const cand of candidates) {
+    const { origin, dest } = cand;
+    try {
+      const offers = await searchFlights({
+        origin,
+        destination: dest.iataCode,
+        departureDate: cand.departureDate,
+        returnDate: cand.returnDate,
+        adults: 1,
+        max: 5,
+      });
 
-      try {
-        const departureDate = addDays(today, dest.bookingWindowDays);
-        const returnDate = addDays(departureDate, dest.defaultTripDays);
-
-        const offers = await searchFlights({
-          origin,
-          destination: dest.iataCode,
-          departureDate,
-          returnDate,
-          adults: 1,
-          max: 5,
-        });
-
-        if (offers.length === 0) {
-          results.push({ destination: dest.name, origin, success: false, error: "No flights found" });
-          continue;
-        }
-
-        const best = offers.sort((a, b) => a.price - b.price)[0]!;
-
-        const [thirtyDayAvg, historicalLows] = await Promise.all([
-          getThirtyDayAvg(dest.id, origin),
-          getHistoricalLows(dest.id, origin),
-        ]);
-        const percentVsAvg =
-          thirtyDayAvg !== null
-            ? ((best.price - thirtyDayAvg) / thirtyDayAvg) * 100
-            : null;
-
-        // Include current price so stored lows reflect "best seen including today"
-        const lowestIn7Days  = historicalLows.low7d  !== null ? Math.min(historicalLows.low7d,  best.price) : best.price;
-        const lowestIn30Days = historicalLows.low30d !== null ? Math.min(historicalLows.low30d, best.price) : best.price;
-        const lowestIn90Days = historicalLows.low90d !== null ? Math.min(historicalLows.low90d, best.price) : best.price;
-
-        const { dealRating, aiSummary, aiTravelTip } = await rateWithAI({
-          origin,
-          destination: dest.name,
-          price: best.price,
-          currency: best.currency,
-          airline: best.airlineCode,
-          stops: best.stops,
-          departureDate: best.departureDate,
-          returnDate: best.returnDate,
-          outboundDuration: best.outboundDuration,
-          returnDuration: best.returnDuration,
-          thirtyDayAvg,
-          percentVsAvg,
-        });
-
-        await db.insert(flightScans).values({
-          scanRunId,
-          destinationId: dest.id,
-          origin,
-          departureDate: best.departureDate,
-          returnDate: best.returnDate,
-          price: String(best.price),
-          currency: best.currency,
-          airline: best.airline,
-          airlineCode: best.airlineCode,
-          stops: best.stops,
-          outboundDuration: best.outboundDuration,
-          returnDuration: best.returnDuration,
-          seatsAvailable: best.seatsAvailable,
-          cabinClass: best.cabinClass,
-          outboundSegments: best.outboundSegments,
-          returnSegments: best.returnSegments,
-          dealRating,
-          aiSummary,
-          aiTravelTip,
-          thirtyDayAvg: thirtyDayAvg !== null ? String(thirtyDayAvg.toFixed(2)) : null,
-          percentVsAvg: percentVsAvg !== null ? String(percentVsAvg.toFixed(2)) : null,
-          lowestIn7Days:  String(lowestIn7Days.toFixed(2)),
-          lowestIn30Days: String(lowestIn30Days.toFixed(2)),
-          lowestIn90Days: String(lowestIn90Days.toFixed(2)),
-          rawData: best.raw,
-        });
-
-        if (notificationsEnabled && percentVsAvg !== null && percentVsAvg <= hotDealThreshold) {
-          try {
-            await notifyOwner({
-              title: `🔥 Hot Deal Alert: ${dest.name}`,
-              content: `${origin} → ${dest.name} is now $${best.price.toFixed(0)} ${best.currency} — ${Math.abs(percentVsAvg).toFixed(1)}% below the 30-day average of $${thirtyDayAvg!.toFixed(0)}. Departs ${best.departureDate}, returns ${best.returnDate}.`,
-            });
-          } catch (notifyErr) {
-            console.error("[Scanner] Notification failed:", notifyErr);
-          }
-        }
-
-        successCount++;
-        results.push({ destination: dest.name, origin, success: true, price: best.price });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[Scanner] Failed for ${dest.name} from ${origin}:`, message);
-        results.push({ destination: dest.name, origin, success: false, error: message });
+      if (offers.length === 0) {
+        results.push({ destination: dest.name, origin, holiday: cand.holidayLabel, success: false, error: "No flights found" });
+        continue;
       }
+
+      const best = offers.sort((a, b) => a.price - b.price)[0]!;
+
+      const [thirtyDayAvg, historicalLows] = await Promise.all([
+        getThirtyDayAvg(dest.id, origin),
+        getHistoricalLows(dest.id, origin),
+      ]);
+      const percentVsAvg =
+        thirtyDayAvg !== null ? ((best.price - thirtyDayAvg) / thirtyDayAvg) * 100 : null;
+
+      const lowestIn7Days  = historicalLows.low7d  !== null ? Math.min(historicalLows.low7d,  best.price) : best.price;
+      const lowestIn30Days = historicalLows.low30d !== null ? Math.min(historicalLows.low30d, best.price) : best.price;
+      const lowestIn90Days = historicalLows.low90d !== null ? Math.min(historicalLows.low90d, best.price) : best.price;
+
+      const { dealRating, aiSummary, aiTravelTip } = await rateWithAI({
+        origin,
+        destination: dest.name,
+        price: best.price,
+        currency: best.currency,
+        airline: best.airlineCode,
+        stops: best.stops,
+        departureDate: best.departureDate,
+        returnDate: best.returnDate,
+        outboundDuration: best.outboundDuration,
+        returnDuration: best.returnDuration,
+        thirtyDayAvg,
+        percentVsAvg,
+      });
+
+      await db.insert(flightScans).values({
+        scanRunId,
+        destinationId: dest.id,
+        origin,
+        departureDate: best.departureDate,
+        returnDate: best.returnDate,
+        price: String(best.price),
+        currency: best.currency,
+        airline: best.airline,
+        airlineCode: best.airlineCode,
+        stops: best.stops,
+        outboundDuration: best.outboundDuration,
+        returnDuration: best.returnDuration,
+        seatsAvailable: best.seatsAvailable,
+        cabinClass: best.cabinClass,
+        outboundSegments: best.outboundSegments,
+        returnSegments: best.returnSegments,
+        dealRating,
+        aiSummary,
+        aiTravelTip,
+        thirtyDayAvg: thirtyDayAvg !== null ? String(thirtyDayAvg.toFixed(2)) : null,
+        percentVsAvg: percentVsAvg !== null ? String(percentVsAvg.toFixed(2)) : null,
+        lowestIn7Days:  String(lowestIn7Days.toFixed(2)),
+        lowestIn30Days: String(lowestIn30Days.toFixed(2)),
+        lowestIn90Days: String(lowestIn90Days.toFixed(2)),
+        holidayLabel: cand.holidayLabel,
+        holidayState: cand.holidayState,
+        inBestSeason: cand.inBestSeason,
+        rawData: best.raw,
+      });
+
+      if (notificationsEnabled && percentVsAvg !== null && percentVsAvg <= hotDealThreshold) {
+        try {
+          const when = cand.holidayLabel ? ` for ${cand.holidayLabel}` : "";
+          await notifyOwner({
+            title: `🔥 Hot Deal Alert: ${dest.name}`,
+            content: `${origin} → ${dest.name}${when} is now $${best.price.toFixed(0)} ${best.currency} — ${Math.abs(percentVsAvg).toFixed(1)}% below the 30-day average of $${thirtyDayAvg!.toFixed(0)}. Departs ${best.departureDate}, returns ${best.returnDate}.`,
+          });
+        } catch (notifyErr) {
+          console.error("[Scanner] Notification failed:", notifyErr);
+        }
+      }
+
+      successCount++;
+      results.push({ destination: dest.name, origin, holiday: cand.holidayLabel, success: true, price: best.price });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Scanner] Failed for ${dest.name} from ${origin}:`, message);
+      results.push({ destination: dest.name, origin, holiday: cand.holidayLabel, success: false, error: message });
     }
   }
 
@@ -385,7 +505,7 @@ export async function runScan(triggeredBy: "cron" | "manual" = "cron"): Promise<
     .set({
       completedAt: new Date(),
       status: successCount > 0 ? "completed" : "failed",
-      destinationCount: activeDestinations.length * origins.length,
+      destinationCount: candidates.length,
       successCount,
     })
     .where(eq(scanRuns.id, scanRunId));
@@ -412,10 +532,11 @@ export async function getTodayDeals(origin?: string) {
     .where(whereClause)
     .orderBy(desc(flightScans.scannedAt));
 
-  // Keep only the latest scan per (destination, origin) pair
+  // Keep only the latest scan per (destination, origin, holiday window).
+  // Different holiday windows for the same route surface as separate cards.
   const seen = new Set<string>();
   return scans.filter((row) => {
-    const key = `${row.destination.id}:${row.scan.origin}`;
+    const key = `${row.destination.id}:${row.scan.origin}:${row.scan.holidayLabel ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
