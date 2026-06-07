@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import {
   RefreshCw, Flame, TrendingDown, Minus, Clock,
   CheckCircle2, AlertCircle, Loader2, Globe, PlaneTakeoff,
-  Search, ArrowUpDown,
+  Search, ArrowUpDown, CalendarDays, Sun, Sparkles,
 } from "lucide-react";
 import { format, formatDistanceToNow, isToday } from "date-fns";
 
@@ -22,6 +22,13 @@ const DEAL_FILTERS = [
   { label: "Standard", value: "Standard", icon: Minus },
 ] as const;
 type DealFilter = (typeof DEAL_FILTERS)[number]["value"];
+
+const TRIP_FILTERS = [
+  { label: "All Trips", value: "all", icon: Sparkles },
+  { label: "Term Holidays", value: "holidays", icon: CalendarDays },
+  { label: "Best Season", value: "season", icon: Sun },
+] as const;
+type TripFilter = (typeof TRIP_FILTERS)[number]["value"];
 
 const ORIGIN_CITIES: Record<string, string> = {
   SYD: "Sydney", MEL: "Melbourne", BNE: "Brisbane",
@@ -81,6 +88,8 @@ export default function Home() {
   const [dealFilter, setDealFilter] = useState<DealFilter>("all");
   const [continentFilter, setContinentFilter] = useState<ContinentFilter>("All");
   const [originFilter, setOriginFilter] = useState<string>("All");
+  const [tripFilter, setTripFilter] = useState<TripFilter>("all");
+  const [holidayWindow, setHolidayWindow] = useState<string>("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<SortOption>("deal");
   const [selectedDeal, setSelectedDeal] = useState<DealRow | null>(null);
@@ -103,16 +112,29 @@ export default function Home() {
 
   const RATING_ORDER = { "Hot Deal": 0, "Good Price": 1, "Standard": 2 } as const;
 
+  // Distinct holiday windows present in the current deals (for the dropdown)
+  const holidayWindows = Array.from(
+    new Set((deals as DealRow[] | undefined ?? [])
+      .map((d) => d.scan.holidayLabel)
+      .filter((l): l is string => !!l))
+  ).sort();
+  const hasHolidayDeals = holidayWindows.length > 0;
+
   const filteredDeals = (deals as DealRow[] | undefined)
     ?.filter((d) => {
       const matchDeal = dealFilter === "all" || d.scan.dealRating === dealFilter;
       const matchContinent = continentFilter === "All" || d.destination.continent === continentFilter;
+      const matchTrip =
+        tripFilter === "all" ||
+        (tripFilter === "holidays" && !!d.scan.holidayLabel) ||
+        (tripFilter === "season" && d.scan.inBestSeason);
+      const matchWindow = holidayWindow === "All" || d.scan.holidayLabel === holidayWindow;
       const q = searchQuery.toLowerCase();
       const matchSearch = !q ||
         d.destination.name.toLowerCase().includes(q) ||
         d.destination.iataCode.toLowerCase().includes(q) ||
         d.destination.country.toLowerCase().includes(q);
-      return matchDeal && matchContinent && matchSearch;
+      return matchDeal && matchContinent && matchTrip && matchWindow && matchSearch;
     })
     .sort((a, b) => {
       if (sortBy === "price") {
@@ -261,7 +283,31 @@ export default function Home() {
         })}
       </div>
 
-      {/* Search + Sort */}
+      {/* Trip type filter */}
+      <div className="flex items-center gap-2 mb-6 flex-wrap">
+        {TRIP_FILTERS.map((opt) => {
+          const Icon = opt.icon;
+          const active = tripFilter === opt.value;
+          return (
+            <button
+              key={opt.value}
+              onClick={() => {
+                setTripFilter(opt.value);
+                if (opt.value !== "holidays") setHolidayWindow("All");
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-150 ${
+                active ? "text-black" : "bg-secondary/60 text-muted-foreground hover:text-foreground"
+              }`}
+              style={active ? { background: "linear-gradient(135deg, oklch(0.72 0.16 145), oklch(0.78 0.15 75))" } : {}}
+            >
+              <Icon className="w-3 h-3" />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Search + Sort + Holiday window */}
       {!isLoading && deals && deals.length > 0 && (
         <div className="flex items-center gap-3 mb-5 flex-wrap">
           <div className="relative flex-1 min-w-48">
@@ -274,6 +320,21 @@ export default function Home() {
               className="w-full h-9 pl-8 pr-3 rounded-lg bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
+          {hasHolidayDeals && (
+            <div className="flex items-center gap-1.5">
+              <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
+              <select
+                value={holidayWindow}
+                onChange={(e) => setHolidayWindow(e.target.value)}
+                className="h-9 rounded-lg bg-secondary border border-border text-sm text-foreground px-2 max-w-52 focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                <option value="All">All holiday windows</option>
+                {holidayWindows.map((w) => (
+                  <option key={w} value={w}>{w}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex items-center gap-1.5">
             <ArrowUpDown className="w-3.5 h-3.5 text-muted-foreground" />
             <select
@@ -381,7 +442,7 @@ export default function Home() {
 
       {!isLoading && !isError && filteredDeals?.length === 0 && deals && deals.length > 0 && (
         <div className="text-center py-16 text-muted-foreground text-sm">
-          No deals found for the selected filters. Try adjusting the continent or deal rating filter.
+          No deals found for the selected filters. Try adjusting the trip type, continent, holiday window, or deal rating.
         </div>
       )}
 
