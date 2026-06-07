@@ -294,7 +294,7 @@ export default function Settings() {
           </button>
         </div>
         <ConnectionCard
-          name="OpenAI GPT-4o-mini"
+          name="OpenAI GPT-5"
           description="AI deal rating · Travel tips · AI chat"
           configured={connections?.openaiConfigured ?? false}
           connected={connections?.openai ?? false}

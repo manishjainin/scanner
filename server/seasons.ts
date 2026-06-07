@@ -7,6 +7,7 @@
 import { eq, isNull, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { destinations } from "../drizzle/schema";
+import { OPENAI_MODEL, OPENAI_REASONING_EFFORT } from "./openaiModel";
 
 /** Ask the LLM for the ideal months to visit a destination. Returns [] on failure. */
 export async function generateBestMonths(destinationName: string, country: string): Promise<number[]> {
@@ -24,7 +25,8 @@ List 2-6 months. Example for a destination best in spring/autumn: { "months": [4
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: OPENAI_MODEL,
+        reasoning_effort: OPENAI_REASONING_EFFORT,
         messages: [{ role: "user", content: prompt }],
         response_format: {
           type: "json_schema",
@@ -42,7 +44,7 @@ List 2-6 months. Example for a destination best in spring/autumn: { "months": [4
             },
           },
         },
-        max_tokens: 150,
+        max_completion_tokens: 1500,
       }),
     });
     if (!response.ok) return [];

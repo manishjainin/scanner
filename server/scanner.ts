@@ -2,7 +2,7 @@
  * Core daily flight scanner
  * - Fetches cheapest round-trip fare per destination from Amadeus
  * - Calculates 30-day average and percent vs average
- * - Rates deals using GPT-5-mini: "Hot Deal" | "Good Price" | "Standard"
+ * - Rates deals using OpenAI (GPT-5 by default): "Hot Deal" | "Good Price" | "Standard"
  * - Triggers owner push notification when fare is >15% below 30-day average
  */
 
@@ -13,6 +13,7 @@ import { searchFlights } from "./amadeus";
 import { notifyOwner } from "./_core/notification";
 import { stateForOrigin, getUpcomingHolidayWindows, seedTermHolidays } from "./holidays";
 import { refreshBestSeasons } from "./seasons";
+import { OPENAI_MODEL, OPENAI_REASONING_EFFORT } from "./openaiModel";
 
 const DEFAULT_ORIGIN = "SYD";
 const HOT_DEAL_THRESHOLD = -15; // % below average (default, overridden by appSettings)
@@ -313,7 +314,8 @@ Respond with JSON only:
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini", // gpt-4o-mini is the API-available model (gpt-5-mini routes to this)
+        model: OPENAI_MODEL,
+        reasoning_effort: OPENAI_REASONING_EFFORT,
         messages: [{ role: "user", content: prompt }],
         response_format: {
           type: "json_schema",
@@ -332,7 +334,7 @@ Respond with JSON only:
             },
           },
         },
-        max_tokens: 300,
+        max_completion_tokens: 2000,
       }),
     });
 

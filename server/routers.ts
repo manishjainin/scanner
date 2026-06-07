@@ -40,6 +40,7 @@ import {
   STATE_NAMES,
 } from "./holidays";
 import { refreshBestSeasons } from "./seasons";
+import { OPENAI_MODEL, OPENAI_REASONING_EFFORT } from "./openaiModel";
 import { sdk } from "./_core/sdk";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -502,9 +503,10 @@ Answer questions about visas, best time to visit, what to do, local tips, whethe
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
           body: JSON.stringify({
-            model: "gpt-4o-mini",
+            model: OPENAI_MODEL,
+            reasoning_effort: OPENAI_REASONING_EFFORT,
             messages: [{ role: "system", content: systemPrompt }, ...input.messages],
-            max_tokens: 500,
+            max_completion_tokens: 3000,
           }),
         });
 
