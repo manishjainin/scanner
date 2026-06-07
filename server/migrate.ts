@@ -1,75 +1,41 @@
 /**
- * Startup schema migrations — runs on every server boot.
- * Uses ADD COLUMN IF NOT EXISTS so each statement is fully idempotent.
- * This guarantees the schema is always up-to-date regardless of whether
- * the docker-entrypoint db:push ran successfully.
+ * Startup schema migrations — runs on every server boot, before requests.
+ *
+ * IMPORTANT: standard MySQL 8.0 does NOT support `ALTER TABLE ... ADD COLUMN
+ * IF NOT EXISTS` (that is MariaDB/TiDB syntax). So we introspect
+ * information_schema to find which columns already exist and only run a plain
+ * `ADD COLUMN` for the missing ones. This is safe and idempotent on all
+ * MySQL-compatible engines.
  */
 
 import { getDb } from "./db";
 import { sql } from "drizzle-orm";
 
-const MIGRATIONS: { name: string; ddl: string }[] = [
-  // ── destinations ────────────────────────────────────────────────────────────
-  {
-    name: "destinations.country",
-    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS country VARCHAR(60) NOT NULL DEFAULT ''",
-  },
-  {
-    name: "destinations.continent",
-    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS continent VARCHAR(30) NOT NULL DEFAULT ''",
-  },
+// ── Columns that must exist (added across feature work) ────────────────────────
+interface ColumnMigration { table: string; column: string; definition: string; }
 
-  // ── flightScans ──────────────────────────────────────────────────────────────
-  {
-    name: "flightScans.origin",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS origin VARCHAR(3) NOT NULL DEFAULT 'SYD'",
-  },
-  {
-    name: "flightScans.lowestIn7Days",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS lowestIn7Days DECIMAL(10,2)",
-  },
-  {
-    name: "flightScans.lowestIn30Days",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS lowestIn30Days DECIMAL(10,2)",
-  },
-  {
-    name: "flightScans.lowestIn90Days",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS lowestIn90Days DECIMAL(10,2)",
-  },
+const COLUMN_MIGRATIONS: ColumnMigration[] = [
+  // destinations
+  { table: "destinations", column: "country",          definition: "VARCHAR(60) NOT NULL DEFAULT ''" },
+  { table: "destinations", column: "continent",        definition: "VARCHAR(30) NOT NULL DEFAULT ''" },
+  { table: "destinations", column: "bestMonths",       definition: "JSON" },
+  { table: "destinations", column: "bestMonthsSource", definition: "VARCHAR(10) NOT NULL DEFAULT 'ai'" },
+  // flightScans
+  { table: "flightScans", column: "origin",         definition: "VARCHAR(3) NOT NULL DEFAULT 'SYD'" },
+  { table: "flightScans", column: "lowestIn7Days",  definition: "DECIMAL(10,2)" },
+  { table: "flightScans", column: "lowestIn30Days", definition: "DECIMAL(10,2)" },
+  { table: "flightScans", column: "lowestIn90Days", definition: "DECIMAL(10,2)" },
+  { table: "flightScans", column: "holidayLabel",   definition: "VARCHAR(100)" },
+  { table: "flightScans", column: "holidayState",   definition: "VARCHAR(3)" },
+  { table: "flightScans", column: "inBestSeason",   definition: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  // users
+  { table: "users", column: "passwordHash", definition: "VARCHAR(255)" },
+];
 
-  // ── users ────────────────────────────────────────────────────────────────────
+// ── Tables to ensure exist (CREATE TABLE IF NOT EXISTS *is* valid MySQL) ────────
+const TABLE_MIGRATIONS: { name: string; ddl: string }[] = [
   {
-    name: "users.passwordHash",
-    ddl: "ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(255)",
-  },
-
-  // ── destinations: best season ─────────────────────────────────────────────────
-  {
-    name: "destinations.bestMonths",
-    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS bestMonths JSON",
-  },
-  {
-    name: "destinations.bestMonthsSource",
-    ddl: "ALTER TABLE destinations ADD COLUMN IF NOT EXISTS bestMonthsSource ENUM('ai','manual') NOT NULL DEFAULT 'ai'",
-  },
-
-  // ── flightScans: holiday context ───────────────────────────────────────────────
-  {
-    name: "flightScans.holidayLabel",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS holidayLabel VARCHAR(100)",
-  },
-  {
-    name: "flightScans.holidayState",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS holidayState VARCHAR(3)",
-  },
-  {
-    name: "flightScans.inBestSeason",
-    ddl: "ALTER TABLE flightScans ADD COLUMN IF NOT EXISTS inBestSeason BOOLEAN NOT NULL DEFAULT FALSE",
-  },
-
-  // ── termHolidays table ─────────────────────────────────────────────────────────
-  {
-    name: "termHolidays table",
+    name: "termHolidays",
     ddl: `CREATE TABLE IF NOT EXISTS termHolidays (
       id INT AUTO_INCREMENT PRIMARY KEY,
       state VARCHAR(3) NOT NULL,
@@ -82,6 +48,31 @@ const MIGRATIONS: { name: string; ddl: string }[] = [
   },
 ];
 
+/** mysql2 .execute() returns [rows, fields]; normalize to a plain rows array. */
+function normalizeRows(res: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(res)) {
+    if (res.length > 0 && Array.isArray(res[0])) return res[0] as Array<Record<string, unknown>>;
+    return res as Array<Record<string, unknown>>;
+  }
+  if (res && typeof res === "object" && Array.isArray((res as { rows?: unknown[] }).rows)) {
+    return (res as { rows: Array<Record<string, unknown>> }).rows;
+  }
+  return [];
+}
+
+async function getExistingColumns(
+  db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
+  table: string,
+): Promise<Set<string>> {
+  const res = await db.execute(sql`
+    SELECT COLUMN_NAME AS c
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ${table}
+  `);
+  const rows = normalizeRows(res);
+  return new Set(rows.map((r) => String(r.c ?? r.COLUMN_NAME ?? "")));
+}
+
 export async function runMigrations(): Promise<void> {
   const db = await getDb();
   if (!db) {
@@ -89,18 +80,47 @@ export async function runMigrations(): Promise<void> {
     return;
   }
 
-  let applied = 0;
-  let failed = 0;
-
-  for (const { name, ddl } of MIGRATIONS) {
+  // 1) Ensure new tables exist first
+  for (const { name, ddl } of TABLE_MIGRATIONS) {
     try {
       await db.execute(sql.raw(ddl));
-      applied++;
     } catch (err) {
-      failed++;
-      console.error(`[Migrate] Failed: ${name}`, err instanceof Error ? err.message : err);
+      console.error(`[Migrate] Table ${name} failed:`, err instanceof Error ? err.message : err);
     }
   }
 
-  console.log(`[Migrate] Done — ${applied} statements applied, ${failed} failed`);
+  // 2) Add any missing columns (introspect first, then plain ADD COLUMN)
+  const tables = Array.from(new Set(COLUMN_MIGRATIONS.map((m) => m.table)));
+  let added = 0;
+  let skipped = 0;
+
+  for (const table of tables) {
+    let existing: Set<string>;
+    try {
+      existing = await getExistingColumns(db, table);
+    } catch (err) {
+      console.error(`[Migrate] Could not introspect ${table}:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+    if (existing.size === 0) {
+      console.warn(`[Migrate] Table ${table} not found — skipping its column migrations`);
+      continue;
+    }
+
+    for (const m of COLUMN_MIGRATIONS.filter((c) => c.table === table)) {
+      if (existing.has(m.column)) { skipped++; continue; }
+      try {
+        await db.execute(sql.raw(`ALTER TABLE \`${m.table}\` ADD COLUMN \`${m.column}\` ${m.definition}`));
+        console.log(`[Migrate] Added ${m.table}.${m.column}`);
+        added++;
+      } catch (err) {
+        // Duplicate column (race / already added) is fine; anything else is logged
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/duplicate column/i.test(msg)) { skipped++; }
+        else console.error(`[Migrate] Failed ${m.table}.${m.column}:`, msg);
+      }
+    }
+  }
+
+  console.log(`[Migrate] Done — ${added} column(s) added, ${skipped} already present`);
 }
